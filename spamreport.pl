@@ -699,14 +699,13 @@ sub read_lines {
 
     if ( $open_files->{$file_name}{'selector'}->can_read ) {
 
-        (@lines) = grep defined, map {
+        for (1 .. $num_lines) {
             $_ = <$file>;
-            if ($_) {
-                $bytes_read += bytes::length($_);
-                chomp;
-                $_;
-            }
-         } (0..$num_lines - 1);
+            last unless defined $_;
+            $bytes_read += bytes::length($_);
+            chomp;
+            push @lines, $_
+        }
     }
 
     $open_files->{$file_name}{'bytes_read'} += $bytes_read;
@@ -773,7 +772,7 @@ sub map_userdomains {
     my %user2domain = ();
     my %domain2user = ();
 
-    open my $fh, '<', $userdomains_path;
+    open my $fh, '<', $userdomains_path or die "Unable to open $userdomains_path : $!";
     %domain2user = map {
         chomp;
         my ($domain, $user) = split ': ';
@@ -791,7 +790,7 @@ sub map_userowners {
     my %user2owner = ();
     my %owner2user = ();
 
-    open my $fh, '<', $trueuserowners_path;
+    open my $fh, '<', $trueuserowners_path or die "Unable to open $trueuserowners_path : $!";
     %user2owner = map {
         chomp;
         my ($user, $owner) = split ': ';
@@ -811,7 +810,8 @@ sub map_valiases {
 
     my %temp;
 
-    for my $valias_file ( glob $valiases_path . '/*' ) {
+    opendir my $vd, $valiases_path or die "Unable to open $valiases_path : $!";
+    for my $valias_file ( map { $valiases_path . '/' . $_ } readdir($vd) ) {
         if ( -s $valias_file > 28 ) {
 
             open my $fh, '<', $valias_file;
@@ -828,6 +828,7 @@ sub map_valiases {
         @alias2dest{keys %temp} = values %temp;
         undef %temp;
     }
+    closedir $vd;
 
     for my $alias (keys %alias2dest) {
         for my $dest ( @{ $alias2dest{$alias} } ) {
@@ -914,9 +915,7 @@ $INC{'SpamReport/Cpanel.pm'} = '/dev/null';
 
 BEGIN {
 package SpamReport::Exim;
-
-use strict;
-use warnings;
+use common::sense;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
@@ -930,12 +929,29 @@ my @labels = qw( ident received_protocol auth_id auth_sender
                      helo_name host_address host_auth interface_address frozen);
 my @flags  = qw( deliver_firsttime host_lookup_failed local localerror );
 
+# glob() performs unnecessary lstats for each file in the queue
+# -f and -M and -M for glob() -> up to four stat syscalls per file.
+# this subroutine performs no stats at all.
+# the time range checks are dropped: if it's in the queue, it's of interest
+sub email_header_files {
+    my $queue_dir = '/var/spool/exim/input';
+    my @headers;
+    opendir my $d1, $queue_dir or die "Unable to open $queue_dir : $!";
+    for my $subdir (readdir($d1)) {
+        opendir my $d2, "$queue_dir/$subdir" or next;
+        for (readdir($d2)) {
+            push @headers, "$queue_dir/$subdir/$_" if /-H$/
+        }
+        closedir $d2;
+    }
+    closedir $d1;
+    @headers
+}
 
 sub parse_queued_mail_data {
     my ($start_time, $end_time, $max_queue, $data_ref) = @_;
 
-    my $queue_dir = '/var/spool/exim/input';
-    my @new_mail = grep { -f $_ and -M _ >= $start_time and -M _ < $end_time } glob $queue_dir . '/*/*-H';
+    my @new_mail = email_header_files();
     for ( my $i = 0; scalar @new_mail > 0 && ($i < $max_queue && $i < scalar @new_mail); $i++ ) {
     
         my $line_no = 0;
@@ -1354,7 +1370,8 @@ sub check_options {
 
     push @{ $OPTS{'run_sections'} }, 'check_dbs' if $OPTS{'check_dbs'};
     push @{ $OPTS{'run_sections'} }, 'check_queue' if $OPTS{'check_queue'};
-    push @{ $OPTS{'run_sections'} }, ( 'search_create', 'check_emails', 'check_logins' );
+    push @{ $OPTS{'run_sections'} }, ( # 'search_create',
+'check_emails', 'check_logins' );
 
     if ( $OPTS{'search_create'} ) {
         @{ $OPTS{'search_create'} } = split /,/, join(',', @{ $OPTS{'search_create'} });
@@ -1531,6 +1548,12 @@ sub parse_cpanel_logs {
     1;
 }
 
+sub get_next_lines {
+    my ($log_fh, $year, $allow_year_dec) = @_;
+    my @lines = File::Nonblock::read_lines($log_fh, $OPTS{'read_lines'});
+    @lines && return ($year, \@lines)
+}
+
 sub parse_exim_dbs {
     my ($data_ref) = @_;
 
@@ -1581,7 +1604,7 @@ sub parse_exim_logs {
                 show_progress($log_fh, 'Reading')
             }
 
-            SpamReport::Cpanel::Exim::parse_exim_mainlog($lines, $OPTS{'end_time'}, $data_ref);
+            SpamReport::Exim::parse_exim_mainlog($lines, $OPTS{'end_time'}, $data_ref);
 
             $allow_year_dec = 0;
         }
@@ -1621,7 +1644,7 @@ sub parse_dovecot_logs {
                 show_progress($log_fh, 'Reading')
             }
 
-            my $year = SpamReport::Maillog::find_dovecot_logins($lines, $year, $OPTS{'end_time'}, $data_ref);
+            $year = SpamReport::Maillog::find_dovecot_logins($lines, $year, $OPTS{'end_time'}, $data_ref);
 
             $allow_year_dec = 0;
         }
