@@ -1370,14 +1370,14 @@ sub check_options {
 
     }
 
+
     $OPTS{'start_time'} = $OPTS{'end_time'} - ($OPTS{'search_hours'} * 3600) if ( ! $OPTS{'start_time'} );
 
     die "Invalid number of lines to read: " . $OPTS{'read_lines'} if ( $OPTS{'read_lines'} <= 0 );
 
     push @{ $OPTS{'run_sections'} }, 'check_dbs' if $OPTS{'check_dbs'};
-    push @{ $OPTS{'run_sections'} }, 'check_queue' if $OPTS{'check_queue'};
-    push @{ $OPTS{'run_sections'} }, ( # 'search_create',
-'check_emails', 'check_logins' );
+    push @{ $OPTS{'run_sections'} }, 'check_queue' if $OPTS{'check_queue'} || $OPTS{'max_queue'};
+    push @{ $OPTS{'run_sections'} }, ( 'check_emails', 'check_logins' ) unless defined($OPTS{'check_queue'});
 
     if ( $OPTS{'search_create'} ) {
         @{ $OPTS{'search_create'} } = split /,/, join(',', @{ $OPTS{'search_create'} });
