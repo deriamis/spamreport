@@ -934,13 +934,18 @@ my @flags  = qw( deliver_firsttime host_lookup_failed local localerror );
 # this subroutine performs no stats at all.
 # the time range checks are dropped: if it's in the queue, it's of interest
 sub email_header_files {
+    my ($max_queue) = @_;
     my $queue_dir = '/var/spool/exim/input';
     my @headers;
     opendir my $d1, $queue_dir or die "Unable to open $queue_dir : $!";
-    for my $subdir (readdir($d1)) {
+    QUEUES: for my $subdir (readdir($d1)) {
+        next if $subdir =~ /^\./;
         opendir my $d2, "$queue_dir/$subdir" or next;
         for (readdir($d2)) {
-            push @headers, "$queue_dir/$subdir/$_" if /-H$/
+            if (/-H$/) {
+                push @headers, "$queue_dir/$subdir/$_";
+                last QUEUES if $max_queue && @headers >= $max_queue;
+            }
         }
         closedir $d2;
     }
@@ -951,8 +956,9 @@ sub email_header_files {
 sub parse_queued_mail_data {
     my ($start_time, $end_time, $max_queue, $data_ref) = @_;
 
-    my @new_mail = email_header_files();
-    for ( my $i = 0; scalar @new_mail > 0 && ($i < $max_queue && $i < scalar @new_mail); $i++ ) {
+    my @new_mail = email_header_files($max_queue);
+    for my $i (0..$#new_mail) {
+        last if $max_queue && $i >= $max_queue;
     
         my $line_no = 0;
         my $tree_start = 0;
@@ -1337,15 +1343,15 @@ sub check_options {
     my $result = GetOptions(
         'start|s=s'   => \$OPTS{'start_time'},
         'end|e=s'     => \$OPTS{'end_time'},
-        'max|m|n=i'   => \$OPTS{'max_queue'},
+        'max|m|n:i'   => \$OPTS{'max_queue'},
         'hours|h=i'   => \$OPTS{'search_hours'},
 #        'time|t=s'    => \$OPTS{'timespec'},
         'current!'    => \$OPTS{'check_queue'},
         'create|c=s@' => \$OPTS{'search_create'},
         'dbs!'        => \$OPTS{'check_dbs'},
         'read|r=i'    => \$OPTS{'read_lines'},
-        'help|h|?'    => sub { HelpMessage() },
-        'man|m'       => sub { pod2usage(-exitval => 0, -verbose => 2) },
+        'help|?'      => sub { HelpMessage() },
+        'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
         'version'     => sub { VersionMessage() },
     );
 
@@ -1741,4 +1747,22 @@ spamreport - Quickly report suspicious mail behavior on a server
 
 =head1 SYNOPSIS
 
-spamreport [options]
+spamreport [--current] [--dbs] [-sehmn] [other long options...]
+
+Options:
+
+    -s <time>   | --start=<time>
+    -e <time>   | --end=<time>
+    -h <hours>  | --hours=<hours>
+
+                | --current             : check the exim queue
+    -m          | --max                 : check the entire queue
+    -n <limit>  | --max=<limit>         : check up to # emails in the queue
+
+                | --dbs                 : check exim databases
+
+                | --help
+                | --man
+                | --version
+
+
