@@ -189,15 +189,71 @@ sub email_search_results {
 sub analyze_results {
     my ($data) = @_;
 
+    SpamReport::Exim::analyze_queued_mail_data($data);
+
     1;
 }
 
 sub print_results {
     my ($data) = @_;
 
-    print Dumper($data);
+    print_queue_results($data) if exists $data->{'queue_top'};
+        
 
     1;
+}
+
+sub print_queue_results {
+    my ($data) = @_;
+    my @results;
+    my $output;
+
+    for my $field (keys %{$data->{'queue_top'}}) {
+        push @results, top(color($field) => $data->{'queue_top'}{$field})
+    }
+    
+    # display results with more related emails than 3% of the number of emails in the queue
+    # ... or if this results in no output, display all fields
+    for my $sig (0.03 * scalar(keys %{$data->{'mail_ids'}}), 1) {
+        for (sort { $a->[0] <=> $b->[0] } grep { $_->[0] > $sig } @results) {
+            $output = 1;
+            print "$_->[0] $_->[1]\n"
+        }
+        last if $output; 
+    }
+}
+
+sub top {
+    my ($type, $h) = @_;
+    map { [$h->{$_}, "$type: $_"] } keys %$h
+}
+
+{
+    my $colors = !exists($ENV{nocolors}) && -t \*STDOUT;
+    my %color = (
+        green => 32,
+        cyan => 36,
+        red => 31,
+        yellow => 33,
+        magenta => "35;1",
+    );
+
+    my %fieldcolors = (
+        source => $color{yellow},
+        auth_id => $color{red},
+        ident => $color{yellow},
+        auth_sender => $color{red},
+        sender_domain => $color{green},
+        sender => $color{green},
+        recipient_domains => $color{cyan},
+        recipient_users => $color{cyan},
+    );
+
+    sub color {
+        my ($field) = @_;
+        return $field unless exists $fieldcolors{$field};
+        "\e[$fieldcolors{$field}m$field\e[0m"
+    }
 }
 
 1;
@@ -967,7 +1023,14 @@ sub parse_queued_mail_data {
         my @recipients;
         my ($mail_id) = $new_mail[$i] =~ m{/([^/]+)-H};
 
-        open my $fh, '<', $new_mail[$i];
+        # this rigamorale avoids: readline() on closed filehandle $fh at spamreport.pl...
+        my @lines;
+        eval {
+                open my $fh, '<', $new_mail[$i];
+                @lines = <$fh>;
+                close $fh;
+        }; next if $@;
+
         %{$data_ref->{'mail_ids'}{$mail_id}} = map {
             chomp;
             $line_no++;
@@ -1006,8 +1069,7 @@ sub parse_queued_mail_data {
                 ();
             }
             
-        } <$fh>;
-        close $fh;
+        } @lines;
     
         my $h_ref = $data_ref->{'mail_ids'}{$mail_id};
         my ($type, $source) = $h_ref->{'sender'} eq 'mailer-daemon'   ? ('bounce', $h_ref->{'helo_name'})
@@ -1027,7 +1089,12 @@ sub parse_queued_mail_data {
         ($h_ref->{'sender_domain'}) = $h_ref->{'sender'} =~ m/@(.*)$/;
     
         for (@{$h_ref->{'recipients'}}) {
-            $h_ref->{'recipient_domains'}{$1}++ if ( $_ =~ m/@(.*)$/ );
+            if ( $_ =~ m/@(.*)$/ ) {
+                $data_ref->{'recipient_domains'}{$1}++;
+                if (exists $data_ref->{'domain2user'}{$1}) {
+                    $h_ref->{'recipient_users'}{$data_ref->{'domain2user'}{$1}}++
+                }
+            }
         }
     
     }
@@ -1120,6 +1187,23 @@ sub parse_exim_mainlog {
     }
 
     1;
+}
+
+sub analyze_queued_mail_data {
+    my ($data) = @_;
+
+    for my $email (values %{$data->{'mail_ids'}}) {
+        for (qw(source auth_id ident auth_sender sender sender_domain)) {
+            next if $_ eq 'sender' && $email->{sender} eq 'mailer-daemon';
+            next if $_ eq 'ident' && $email->{ident} eq 'mailnull';
+            $data->{'queue_top'}{$_}{$email->{$_}}++ if defined $email->{$_}
+        }
+        for my $field (qw(recipient_domains recipient_users)) {
+            for (keys %{$email->{$field}}) {
+                $data->{'queue_top'}{$field}{$_}++
+            }
+        }
+    }
 }
 
 1;
@@ -1339,6 +1423,7 @@ my %sections;
 
 sub check_options {
     Getopt::Long::Configure(qw(gnu_getopt auto_version auto_help));
+    my $check_queue;
 
     my $result = GetOptions(
         'start|s=s'   => \$OPTS{'start_time'},
@@ -1346,7 +1431,7 @@ sub check_options {
         'max|m|n:i'   => \$OPTS{'max_queue'},
         'hours|h=i'   => \$OPTS{'search_hours'},
 #        'time|t=s'    => \$OPTS{'timespec'},
-        'current!'    => \$OPTS{'check_queue'},
+        'current!'    => \$check_queue,
         'create|c=s@' => \$OPTS{'search_create'},
         'dbs!'        => \$OPTS{'check_dbs'},
         'read|r=i'    => \$OPTS{'read_lines'},
@@ -1376,13 +1461,16 @@ sub check_options {
     die "Invalid number of lines to read: " . $OPTS{'read_lines'} if ( $OPTS{'read_lines'} <= 0 );
 
     push @{ $OPTS{'run_sections'} }, 'check_dbs' if $OPTS{'check_dbs'};
-    push @{ $OPTS{'run_sections'} }, 'check_queue' if $OPTS{'check_queue'} || $OPTS{'max_queue'};
-    push @{ $OPTS{'run_sections'} }, ( 'check_emails', 'check_logins' ) unless defined($OPTS{'check_queue'});
+    push @{ $OPTS{'run_sections'} }, 'check_queue' if $check_queue || $OPTS{'max_queue'};
+    push @{ $OPTS{'run_sections'} }, ( 'check_emails', 'check_logins' ) unless $check_queue;
 
     if ( $OPTS{'search_create'} ) {
         @{ $OPTS{'search_create'} } = split /,/, join(',', @{ $OPTS{'search_create'} });
         $OPTS{'run_sections'} = [ 'email_create' ];
     }
+
+    $OPTS{'max_queue'} = 0 if $check_queue;
+    $OPTS{'check_queue'} = $check_queue;
 
     return $result;
 }
