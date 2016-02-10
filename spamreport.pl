@@ -1101,7 +1101,7 @@ sub parse_queued_mail_data {
 }
 
 sub parse_exim_mainlog {
-    my ($lines, $end_time, $data_ref) = @_;
+    my ($lines, $year, $end_time, $data_ref) = @_;
 
     # sender = $
     # sender_domain = $
@@ -1636,7 +1636,7 @@ sub parse_logs {
     for my $logfile (sort { -M $b <=> -M $a } @logs) {
         my $end_reached;
         my $mtime = (stat($logfile))[9];
-	next if ( $mtime < $OPTS{'start_time'} );
+        next if ( $mtime < $OPTS{'start_time'} );
         my $year = (CORE::localtime($mtime))[5];
         my $allow_year_dec = 1;
         my $lines;
