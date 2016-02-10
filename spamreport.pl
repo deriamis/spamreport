@@ -1600,48 +1600,6 @@ sub show_progress {
     1;
 }
 
-sub parse_cpanel_logs {
-    my ($data_ref) = @_;
-
-    my @cpanel_logfiles = sort { -M $b <=> -M $a }  glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}';
-
-    for my $logfile ( @cpanel_logfiles ) {
-
-        my $end_reached = 0;
-        my $mtime = (stat($logfile))[9];
-        my $year = (CORE::localtime($mtime))[5];
-        my $allow_year_dec = 1;
-        my $lines;
-
-        next if ( $mtime < $OPTS{'start_time'} or $mtime > $OPTS{'end_time'} );
-
-        my $log_fh = File::Nonblock::open($logfile, 8*1024) or die "Could not open $logfile";
-
-        while ( not File::Nonblock::eof($log_fh) ) {
-
-            ($year, $lines) = get_next_lines($log_fh, $year, $allow_year_dec) or $end_reached = 1;
-            last if $end_reached;
-
-            if ( File::Nonblock::tell($log_fh) != 0 ) {
-                show_progress($log_fh, 'Reading')
-            }
-
-            SpamReport::Cpanel::find_email_creation($lines, $data_ref, $OPTS{'end_time'}, @{ $OPTS{'search_create'} });
-
-            last if ( scalar keys %{ $data_ref->{'logins'} } == scalar @{ $OPTS{'search_create'} } );
-
-            $allow_year_dec = 0;
-        }
-
-        File::Nonblock::close($log_fh);
-        print "\n";
-
-        last if ( scalar keys %{ $data_ref->{'logins'} } == scalar @{ $OPTS{'search_create'} } or $end_reached );
-    }
-
-    1;
-}
-
 sub get_next_lines {
     my ($log_fh, $year, $allow_year_dec) = @_;
     my @lines = File::Nonblock::read_lines($log_fh, $OPTS{'read_lines'});
@@ -1672,38 +1630,35 @@ sub parse_exim_queue {
     SpamReport::Exim::parse_queued_mail_data($OPTS{'start_time'}, $OPTS{'end_time'}, $OPTS{'max_queue'}, $data_ref);
 }
 
-sub parse_exim_logs {
-    my ($data_ref) = @_;
+sub parse_logs {
+    my ($data, $handler, @logs) = @_;
 
-    my @exim_logfiles = sort { -M $b <=> -M $a }  glob '/var/log/exim_mainlog{,{-*,.?}.gz}';
+    for my $logfile (sort { -M $b <=> -M $a } @logs) {
+        my $end_reached;
+        my $mtime = (stat($logfile))[9];
+	next if ( $mtime < $OPTS{'start_time'} );
+        my $year = (CORE::localtime($mtime))[5];
+        my $allow_year_dec = 1;
+        my $lines;
 
-    for my $logfile (@exim_logfiles) {
+        my $log = File::Nonblock::open($logfile, 8*1024) or die "Could not open $logfile";
 
-       my $end_reached = 0;
-       my $mtime = (stat($logfile))[9];
-       my $year = (CORE::localtime($mtime))[5];
-       my $allow_year_dec = 1;
-       my $lines;
-
-       next if ( $mtime < $OPTS{'start_time'} );
-
-       my $log_fh = File::Nonblock::open($logfile, 8*1024) or die "Could not open $logfile";
-
-        while ( not File::Nonblock::eof($log_fh) ) {
-
-            ($year, $lines) = get_next_lines($log_fh, $year, $allow_year_dec) or $end_reached = 1;
+        while (not File::Nonblock::eof($log)) {
+            ($year, $lines) = get_next_lines($log, $year, $allow_year_dec) or $end_reached = 1;
             last if $end_reached;
 
-            if ( File::Nonblock::tell($log_fh) != 0 ) {
-                show_progress($log_fh, 'Reading')
+            if ( File::Nonblock::tell($log) != 0 ) {
+                show_progress($log, 'Reading')
             }
 
-            SpamReport::Exim::parse_exim_mainlog($lines, $OPTS{'end_time'}, $data_ref);
+            for ($handler->($lines, $year, $OPTS{'end_time'}, $data)) {
+                $year = $_ if $_ > 1
+            }
 
             $allow_year_dec = 0;
         }
 
-        File::Nonblock::close($log_fh);
+        File::Nonblock::close($log);
         print "\n";
 
         last if $end_reached;
@@ -1712,44 +1667,15 @@ sub parse_exim_logs {
     1;
 }
 
+sub parse_cpanel_logs {
+    parse_logs(shift, \&SpamReport::Cpanel::find_email_creation, glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}');
+}
+
+sub parse_exim_logs {
+    parse_logs(shift, \&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
+}
 sub parse_dovecot_logs {
-    my ($data_ref) = @_;
-
-    my @dovecot_logfiles = sort { -M $b <=> -M $a } glob '/var/log/maillog{,{-*,.?}.gz}';
-
-    for my $logfile (@dovecot_logfiles) {
-
-       my $end_reached = 0;
-       my $mtime = (stat($logfile))[9];
-       my $year = (CORE::localtime($mtime))[5];
-       my $allow_year_dec = 1;
-       my $lines;
-
-       next if ( $mtime < $OPTS{'start_time'} );
-
-       my $log_fh = File::Nonblock::open($logfile, 8*1024) or die "Could not open $logfile";
-
-        while ( not File::Nonblock::eof($log_fh) ) {
-
-            ($year, $lines) = get_next_lines($log_fh, $year, $allow_year_dec) or $end_reached = 1;
-            last if $end_reached;
-
-            if ( File::Nonblock::tell($log_fh) != 0 ) {
-                show_progress($log_fh, 'Reading')
-            }
-
-            $year = SpamReport::Maillog::find_dovecot_logins($lines, $year, $OPTS{'end_time'}, $data_ref);
-
-            $allow_year_dec = 0;
-        }
-
-        File::Nonblock::close($log_fh);
-        print "\n";
-
-        last if $end_reached;
-    }
-
-    1;
+    parse_logs(shift, \&SpamReport::Maillog::find_dovecot_logins, glob '/var/log/maillog{,{-*,.?}.gz}');
 }
 
 sub setup_cpanel {
