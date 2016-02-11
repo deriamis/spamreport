@@ -62,6 +62,12 @@ pattern name => [ qw(exim fields) ],
 pattern name => [ qw(exim info fields) ],
       create => q/((\w+)=(?:"(.*)"|(\S+))\s*)/;
 
+pattern name => [ qw(exim info cron) ],
+      create => q,^\S+ \S+ cwd=\S+ 9 args: /usr/sbin/sendmail -FCronDaemon -i -odi -oem -oi -t -f (\S+)$,;
+
+pattern name => [ qw(exim info script) ],
+      create => q,^\S+ \S+ cwd=(/home\S+)(?!.*-FCronDaemon.*$),;
+
 1;
 
 } # end module Regexp::Common::Exim
@@ -135,7 +141,6 @@ package SpamReport::Output;
 
 use strict;
 use warnings;
-use Data::Dumper;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
@@ -191,6 +196,7 @@ sub analyze_results {
 
     SpamReport::Exim::analyze_queued_mail_data($data);
     SpamReport::Exim::analyze_num_recipients($data);
+    SpamReport::Maillog::analyze_logins($data);
 
     1;
 }
@@ -200,6 +206,8 @@ sub print_results {
 
     print_queue_results($data) if exists $data->{'queue_top'};
     print_recipient_results($data) if exists $data->{'suspects'}{'num_recipients'};
+    print_script_results($data);
+    print_login_results($data) if exists $data->{'suspects'}{'logins'};
 
     1;
 }
@@ -220,13 +228,46 @@ sub print_recipient_results {
     }
 }
 
+sub print_script_results {
+    my ($data) = @_;
+    for (sort { $data->{'scriptdirs'}{$a} <=> $data->{'scriptdirs'}{$b} } keys %{$data->{'scriptdirs'}}) {
+        print "$data->{'scriptdirs'}{$_} $_\n"
+    }
+    for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
+        print "$data->{'script'}{$_} $_\n"
+    }
+    for (sort { $data->{'script_ip'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script_ip'}}) {
+        print "$data->{'script_ip'}{$_} $_\n"
+    }
+}
+
+sub print_login_results {
+    my ($data) = @_;
+    my @width = (0, 0);
+    my %h = %{$data->{'suspects'}{'logins'}};
+    for (values %h) {
+        my ($lo, $pr) = (length($_->{'total_logins'}), length(scalar(keys %{$_->{'logins_from'}})));
+        $width[0] = $lo if $width[0] < $lo;
+        $width[1] = $pr if $width[1] < $pr;
+    }
+    for my $login (sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
+        my @ips = sort { $h{$login}{'logins_from'}{$b} <=> $h{$login}{'logins_from'}{$a} } keys %{$h{$login}{'logins_from'}};
+        my @counts = map { $h{$login}{'logins_from'}{$_} } @ips;
+        printf "%$width[0]d %$width[1]d $login   %s(%d) %s(%d) %s(%d)\n",
+            $h{$login}{'total_logins'}, scalar(keys %{$h{$login}{'logins_from'}}),
+            color(35, $ips[0]), $counts[0],
+            color(33, $ips[1]), $counts[1],
+            color(36, $ips[2]), $counts[2]
+    }
+}
+
 sub print_queue_results {
     my ($data) = @_;
     my @results;
     my $output;
 
     for my $field (keys %{$data->{'queue_top'}}) {
-        push @results, top(color($field) => $data->{'queue_top'}{$field})
+        push @results, top(fieldcolor($field) => $data->{'queue_top'}{$field})
     }
     
     # display results with more related emails than 3% of the number of emails in the queue
@@ -266,11 +307,12 @@ sub top {
         recipient_users => $color{cyan},
     );
 
-    sub color {
+    sub fieldcolor {
         my ($field) = @_;
         return $field unless exists $fieldcolors{$field};
         "\e[$fieldcolors{$field}m$field\e[0m"
     }
+    sub color { "\e[$_[0]m$_[1]\e[0m" }
 }
 
 1;
@@ -1082,6 +1124,10 @@ sub parse_queued_mail_data {
             elsif ( $eod and ( $line_no - $eod > $num_recipients) ) {
                 ('recipients' => \@recipients);
             }
+            elsif ( $eod and /^\d+\s+X-PHP-Script: (\S+) for (\S+)/ ) {
+                $data_ref->{'mail_ids'}{$mail_id}{'script'} = $1;
+                $data_ref->{'mail_ids'}{$mail_id}{'script_ip'} = $2;
+            }
             else {
                 ();
             }
@@ -1140,6 +1186,10 @@ sub parse_exim_mainlog {
 
     for my $line ( @{$lines} ) {
 
+        if ( $line =~ $RE{'exim'}{'info'}{'script'} ) {
+            $data_ref->{'scriptdirs'}{$1}++;
+            next
+        }
         next if ( $line !~ m/$RE{'exim'}{'message'}/ );
 
         my %log_data = (
@@ -1210,6 +1260,7 @@ sub analyze_queued_mail_data {
     my ($data) = @_;
 
     for my $email (values %{$data->{'mail_ids'}}) {
+        $data->{'script'}{$email->{'script'}}++ if exists $email->{'script'};
         for (qw(source auth_id ident auth_sender sender sender_domain)) {
             next if $_ eq 'sender' && $email->{sender} eq 'mailer-daemon';
             next if $_ eq 'ident' && $email->{ident} eq 'mailnull';
@@ -1359,9 +1410,8 @@ sub load {
 }
 
 sub save {
-    my ($data, $OPTS) = @_;
+    my ($data) = @_;
     rotate();
-    $data->{'OPTS'} = $OPTS;
     DumpFile($logpath, $data);
 }
 
@@ -1405,50 +1455,29 @@ my @months = qw[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec];
 my %month_to_ord = map {$months[$_] => $_} (0 .. $#months);
 
 sub find_dovecot_logins {
-    my ($lines, $year, $end_time, $data_ref, @search_list) = @_;
-
-    my $l_mon;
-
-    for my $line ( @{$lines} ) {
-            
-        if ( $line =~ m/$RE{'mail'}{'login'}/ ) {
-
-            my $timestamp = 0;
-            my $service = $2;
-            my $info = $3;
-
-            if ( $1 =~ m/$RE{'mail'}{'login'}{'timestamp'}/ ) {
-
-                # Account for no year in log timestamp
-                # by basing it on the log's mtime.
-                # 
-                # Assumes:
-                #     > 1 log line per year
-                #     Logging moves forward in time
-                #     mtime for archived log files is static
-                
-                my $c_mon = $month_to_ord{$1};
-
-                if ( $c_mon == 0 ) {
-                    $year++ if defined $l_mon and $l_mon > $c_mon;
-                }
-
-                $l_mon = $c_mon;
-
-                $timestamp = timegm($5, $4, $3, $2, $c_mon, $year) - $tz_offset;
-            }
-
-            last if ( $timestamp > $end_time );
-
-            if ( $info =~ m/$RE{'mail'}{'login'}{'info'}/ ) {
-                $data_ref->{'logins'}{$1}{'total_logins'}++;
-                $data_ref->{'logins'}{$1}{'logins_from'}{$2}++ if ( $3 ne '127.0.0.1' and $2 ne $main_ip );
+    my ($lines, $year, $end_time, $data_ref) = @_;
+    
+    for (@$lines) {
+        if ( /Login: user=<(?!__cpanel)(\S+?)>/ ) {
+            last if /^$data_ref->{'OPTS'}{'dovecot_end'} /;
+            my $login = $1;
+            $data_ref->{'logins'}{$login}{'total_logins'}++;
+            if ( /rip=(?!127\.0\.0\.1)(?!$main_ip)(\S+?),/ ) {
+                $data_ref->{'logins'}{$login}{'logins_from'}{$1}++
             }
         }
-
     }
+}
 
-    return $year;
+# implemented: SUSP.LOG1 account suspect if login IPs have >5 unique leading 2 octets
+sub analyze_logins {
+    my ($data) = @_;
+
+    for my $login (keys %{$data->{'logins'}}) {
+        my %prefix = map { /^(\d+\.\d+\.)/ or die $_; ($1, 1) } keys %{$data->{'logins'}{$login}{'logins_from'}};
+        next unless scalar(keys %prefix) > 5;
+        $data->{'suspects'}{'logins'}{$login} = $data->{'logins'}{$login};
+    }
 }
 
 1;
@@ -1581,6 +1610,8 @@ sub check_options {
         $OPTS{'run_sections'} = []
     }
 
+    $OPTS{'dovecot_end'} = POSIX::strftime("%a %d", @time);
+
     return $result;
 }
 
@@ -1711,8 +1742,8 @@ sub show_progress {
 
 sub get_next_lines {
     my ($log_fh, $year, $allow_year_dec) = @_;
-    my @lines = File::Nonblock::read_lines($log_fh, $OPTS{'read_lines'});
-    @lines && return ($year, \@lines)
+    my $lines = File::Nonblock::read_lines($log_fh, $OPTS{'read_lines'});
+    $lines && return ($year, $lines)
 }
 
 sub parse_exim_dbs {
@@ -1760,9 +1791,7 @@ sub parse_logs {
                 show_progress($log, 'Reading')
             }
 
-            for ($handler->($lines, $year, $OPTS{'end_time'}, $data)) {
-                $year = $_ if $_ > 1
-            }
+            $handler->($lines, $year, $OPTS{'end_time'}, $data);
 
             $allow_year_dec = 0;
         }
@@ -1843,7 +1872,8 @@ sub main {
     } else {
         die "This script only supports cPanel at this time." if (not -r '/etc/userdomains' && -d '/etc/valiases');
         setup_cpanel($data);
-        SpamReport::Output::head_info(\%OPTS)
+        SpamReport::Output::head_info(\%OPTS);
+        $data->{'OPTS'} = \%OPTS;
     }
 
     for my $section ( @{ $OPTS{'run_sections'} } ) {
@@ -1854,7 +1884,7 @@ sub main {
         SpamReport::Output::email_search_results($data);
     }
     else {
-        SpamReport::Recent::save($data, \%OPTS) if $OPTS{'save'};
+        SpamReport::Recent::save($data) if $OPTS{'save'};
         SpamReport::Output::analyze_results($data);
         SpamReport::Output::print_results($data) unless $OPTS{'cron'};
     }
