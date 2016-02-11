@@ -190,6 +190,7 @@ sub analyze_results {
     my ($data) = @_;
 
     SpamReport::Exim::analyze_queued_mail_data($data);
+    SpamReport::Exim::analyze_num_recipients($data);
 
     1;
 }
@@ -198,9 +199,25 @@ sub print_results {
     my ($data) = @_;
 
     print_queue_results($data) if exists $data->{'queue_top'};
-        
+    print_recipient_results($data) if exists $data->{'suspects'}{'num_recipients'};
 
     1;
+}
+
+sub print_recipient_results {
+    my ($data) = @_;
+    my @widths = (0, 0);
+    for (values %{$data->{'suspects'}{'num_recipients'}}) {
+        my ($em, $ad) = (length($_->{'emails'}), length($_->{'addresses'}));
+        $widths[0] = $em if $em > $widths[0];
+        $widths[1] = $ad if $ad > $widths[1];
+    }
+    
+    my %h = %{$data->{'suspects'}{'num_recipients'}};
+    for (sort { $h{$a}->{ratio} <=> $h{$b}->{ratio} } keys %h) {
+        printf "%$widths[0]d %$widths[1]d %.4f num_recipients: $_\n",
+            $h{$_}->{'emails'}, $h{$_}->{'addresses'}, $h{$_}->{'ratio'};
+    }
 }
 
 sub print_queue_results {
@@ -1206,6 +1223,46 @@ sub analyze_queued_mail_data {
     }
 }
 
+sub who {
+    my ($data, $email) = @_;
+    my $who = '(unknown)';
+    for (qw(ident auth_id auth_sender source)) {
+        $who = $email->{$_} if exists $email->{$_}
+    }
+    if ($who =~ /@(.*)/ and exists $data->{'domain2user'}{$1}) {
+        $who = "$who ($data->{'domain2user'}{$1})"
+    }
+}
+
+# sending 200 emails each to 2 of 2 total addresses = OK
+# sending 200 emails each to 2 of 400 total addresses = SUSPECT
+# sending 200 emails each to 2 of 201 total addresses = OK (self CC)
+# implemented: SUSP.NR1 suspect if total addresses / emails >= 1.20
+sub analyze_num_recipients {
+    my ($data) = @_;
+    my %suspects;
+    my %emails;
+
+    # add suspect: anything with more than one recipient
+    for my $email (values %{$data->{'mail_ids'}}) {
+        next unless $email->{'num_recipients'} > 1;
+        $suspects{who($data, $email)}{$_} = 1 for @{$email->{'recipients'}};
+        $emails{who($data, $email)}++;
+    }
+
+    # confirm suspect: anything passing SUSP.NR1
+    for (keys %suspects) {
+        my $r = keys(%{$suspects{$_}}) / $emails{$_};
+        if ($r >= 1.2) {
+            $data->{'suspects'}{'num_recipients'}{$_} = {
+                addresses => scalar(keys(%{$suspects{$_}})),
+                emails => $emails{$_},
+                ratio => $r
+            };
+        }
+    }
+}
+
 1;
 } # end module SpamReport::Exim
 BEGIN {
@@ -1283,6 +1340,46 @@ sub close {
 } # end module SpamReport::Exim::DB
 BEGIN {
 $INC{'SpamReport/Exim/DB.pm'} = '/dev/null';
+}
+
+BEGIN {
+package SpamReport::Recent;
+use common::sense;
+use YAML::Syck qw(LoadFile DumpFile);
+
+use vars qw/$VERSION/;
+$VERSION = '2015122201';
+my $logpath = "/opt/hgmods/logs/spamreport.dat";
+my $MAX_RETAINED = 4;
+
+sub load {
+    my ($path) = @_;
+    $path = $logpath unless defined $path;
+    LoadFile($path);
+}
+
+sub save {
+    my ($data, $OPTS) = @_;
+    rotate();
+    $data->{'OPTS'} = $OPTS;
+    DumpFile($logpath, $data);
+}
+
+sub rotate {
+    my @logs = sort { -M $a <=> -M $b } glob "$logpath*";
+    unlink for @logs[$MAX_RETAINED..$#logs];
+    for (sort { -M $b <=> -M $a } @logs) {
+        next unless /.(\d+)$/;
+        my ($this, $next) = ($1, $1 + 1);
+        rename "$logpath.$this", "$logpath.$next";
+    }
+    rename $logpath, "$logpath.1";
+}
+
+1;
+} # end module SpamReport::Recent
+BEGIN {
+$INC{'SpamReport/Recent.pm'} = '/dev/null';
 }
 
 BEGIN {
@@ -1435,6 +1532,10 @@ sub check_options {
         'create|c=s@' => \$OPTS{'search_create'},
         'dbs!'        => \$OPTS{'check_dbs'},
         'read|r=i'    => \$OPTS{'read_lines'},
+        'cron'        => \$OPTS{'cron'},
+        'save'        => \$OPTS{'save'},
+        'load=s'      => \$OPTS{'load'},
+        'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
         'version'     => sub { VersionMessage() },
@@ -1471,6 +1572,14 @@ sub check_options {
 
     $OPTS{'max_queue'} = 0 if $check_queue;
     $OPTS{'check_queue'} = $check_queue;
+
+    $OPTS{'save'} = 1 if $OPTS{'cron'};
+    if ($OPTS{'latest'} and $OPTS{'load'}) {
+        die "only zero or one of --latest and --load can be provided"
+    }
+    if ($OPTS{'latest'} or $OPTS{'load'}) {
+        $OPTS{'run_sections'} = []
+    }
 
     return $result;
 }
@@ -1727,10 +1836,15 @@ sub main {
 
     check_options() or pod2usage(2);
 
-    SpamReport::Output::head_info(\%OPTS);
-
-    die "This script only supports cPanel at this time." if (not -r '/etc/userdomains' && -d '/etc/valiases');
-    setup_cpanel($data);
+    if ($OPTS{'load'} or $OPTS{'latest'}) {
+        $data = SpamReport::Recent::load($OPTS{'load'}) if $OPTS{'load'};
+        $data = SpamReport::Recent::load() if $OPTS{'latest'};
+        SpamReport::Output::head_info($data->{'OPTS'});
+    } else {
+        die "This script only supports cPanel at this time." if (not -r '/etc/userdomains' && -d '/etc/valiases');
+        setup_cpanel($data);
+        SpamReport::Output::head_info(\%OPTS)
+    }
 
     for my $section ( @{ $OPTS{'run_sections'} } ) {
         $sections{$section}($data);
@@ -1740,8 +1854,9 @@ sub main {
         SpamReport::Output::email_search_results($data);
     }
     else {
+        SpamReport::Recent::save($data, \%OPTS) if $OPTS{'save'};
         SpamReport::Output::analyze_results($data);
-        SpamReport::Output::print_results($data);
+        SpamReport::Output::print_results($data) unless $OPTS{'cron'};
     }
 }
 
@@ -1775,8 +1890,13 @@ Options:
 
                 | --dbs                 : check exim databases
 
+                | --cron                : gather data and save it, without analysis or output
+                | --save                : save data before analysis, while operating normally
+                | --latest              : load data from last --save or --cron
+                | --load=path/to/file   : load data from file
+
                 | --help
                 | --man
                 | --version
 
-
+NB. when loading saved data, times are not considered.
