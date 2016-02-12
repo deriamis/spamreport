@@ -139,16 +139,19 @@ $INC{'Regexp/Common/SpamReport.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Output;
 
-use strict;
-use warnings;
+use common::sense;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
 
 use Time::Local;
+use List::Util qw(shuffle);
 
 my @time = CORE::localtime(time);
 my $tz_offset = timegm(@time) - timelocal(@time);
+
+use Sys::Hostname::Long qw(hostname_long);
+my $hostname = hostname_long();
 
 sub head_info {
     my ($OPTS) = @_;
@@ -279,6 +282,179 @@ sub print_queue_results {
         }
         last if $output; 
     }
+}
+
+sub analyze_user_results {
+    my ($data, $user) = @_;
+    my ($sent, $bounce, $queued, $boxtrapper) = (0, 0, 0);
+    my %sent;
+    my %bounce;
+    my %sent_as;
+    my %ips;
+    my %cwd;
+    my %script;
+    my %recip;
+    my %subject;
+
+    for my $email (values %{$data->{'mail_ids'}}) {
+        if ($email->{'type'} eq 'bounce' && exists $email->{'recipient_users'}{$user}) {
+            $bounce++;
+            $bounce{$email->{'recipients'}->[0]}++;
+            $queued++ if $email->{'in_queue'};
+        }
+        elsif ($email->{'type'} eq 'bounce' && exists $email->{'source'}{$user}) {
+            $bounce++;
+            $bounce{$email->{'source'}}++;
+            $queued++ if $email->{'in_queue'};
+        }
+        elsif ($email->{'who'} eq $user) {
+            $sent++;
+            $sent_as{$email->{'sender'}}++;
+            $queued++ if $email->{'in_queue'};
+            $boxtrapper++ if $email->{'boxtrapper'};
+            if ($email->{'host_auth'} =~ /^dovecot_/) {
+                $sent{$email->{'host_auth'} . ':' . $email->{'auth_sender'}}++;
+            } else {
+                $sent{$email->{'auth_sender'}}++;
+            }
+            if (exists $email->{'host_address'}) {
+                $ips{$email->{'host_address'}}++
+            }
+            for (keys %{$email->{'script'}}) {
+                $script{$_}++
+            }
+            for (@{$email->{'recipients'}}) {
+                $recip{$_}++
+            }
+            if (exists $email->{'subject'}) {
+                $subject{$email->{'subject'}}++
+            }
+        }
+    }
+    for (keys %{$data->{'scriptdirs'}}) {
+        next unless m,^/[^/]+/$user/,;
+        $cwd{$_}++
+    }
+
+    $data->{'suspects'}{'users'}{$user} = {
+        sent => $sent || "NaN",
+        bounce => $bounce,
+        queued => $queued,
+        boxtrapper => $boxtrapper,
+        sent_accounts => \%sent,
+        bounce_addresses => \%bounce,
+        sent_addresses => \%sent_as,
+        ips => \%ips,
+        cwd => \%cwd,
+        script => \%script,
+        recipients => \%recip,
+        subject => \%subject,
+    };
+}
+
+# modified http://www.perlmonks.org/?node_id=653
+sub commify {
+    my $input = shift;
+    $input = scalar(keys %$input) if ref $input eq 'HASH';
+    $input = reverse $input;
+    $input =~ s<(\d\d\d)(?=\d)(?!\d*\.)><$1,>g;
+    $input = reverse $input;
+    $input
+}
+
+sub sample {
+    my ($h, $title) = @_;
+    (join "\n",
+        map { "$_: $h->{$_}" }
+        grep { defined $_ }
+        (sort { $h->{$b} <=> $h->{$a} } keys %$h)[0..14])
+    . remainder($h, $title)
+}
+
+sub topsubjects {
+    my ($h) = @_;
+    my $width = 0;
+    for (values %$h) { $width = length($_) if $width < length($_) }
+    (join "\n",
+        map { sprintf "%${width}d $_", $h->{$_} }
+        grep { defined $_ }
+        (sort { $h->{$b} <=> $h->{$a} } keys %$h)[0..14])
+}
+
+sub remainder {
+    my ($h, $title) = @_;
+    my $rest = keys(%$h) - 15;
+    return if $rest < 1;
+    return "\n\nThere were @{[commify($rest)]} additional $title trimmed."
+}
+
+sub print_user_results {
+    my ($data, $user) = @_;
+    my $u = $data->{'suspects'}{'users'}{$user}
+        or die "No information about $user";
+
+    if (!$u->{'sent'}) {
+        die "$user sent no emails in the period examined.\n"
+    }
+
+    my %sent_as = %{$u->{'sent_addresses'}};
+    $sent_as{$_} += $u->{'bounce_addresses'}{$_} for keys %{$u->{'bounce_addresses'}};
+
+    my $total = $u->{'sent'} + $u->{'bounce'};
+    my $total ||= 'NaN';
+
+    print <<"REPORT";
+Reference: spamreport
+   Server: $hostname
+     User: $user
+
+----------------------------------------
+
+User sent approximately @{[commify($u->{'sent'})]} messages to @{[commify($u->{'recipients'})]} unique recipients.
+There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addresses'})]} unique addresses, @{[sprintf "%.2f%%", 100*$u->{'bounce'}/$total]} of the emails.
+
+Boxtrapper was responsible for @{[commify($u->{'boxtrapper'})]} sent emails, or @{[sprintf "%.2f%%", 100*$u->{'boxtrapper'}/$total]} of the emails.
+
+Email addresses sent from:
+--------------------------
+@{[sample(\%sent_as, "sender addresses")]}
+
+Logins used to send mail:
+-------------------------
+@{[sample($u->{'sent_accounts'}, "logins")]}
+
+Current working directories:
+----------------------------
+@{[sample($u->{'cwd'}, "working directories")]}
+
+PHP Scripts:
+------------
+@{[sample($u->{'script'}, "PHP scripts")]}
+
+Random recipient addresses:
+---------------------------
+@{[join "\n",
+    grep { defined $_ }
+    (List::Util::shuffle(keys %{$u->{'recipients'}}))[0..15]]}
+
+Top recipients:
+---------------
+@{[sample($u->{'recipients'}, "recipients")]}
+
+Top subjects:
+-------------
+@{[topsubjects($u->{'subject'})]}
+
+Total number of discrete subjects: @{[commify($u->{'subject'})]}
+
+Emails found in queue:
+----------------------
+User: @{[commify($u->{'queued'})]}, Total: @{[commify($data->{'total_queue'})]}
+
+This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}))]} of the emails found.
+
+
+REPORT
 }
 
 sub top {
@@ -1117,16 +1293,21 @@ sub parse_queued_mail_data {
                 $num_recipients = $1;
                 ('num_recipients' => $num_recipients);
             }
+            elsif ( $eod and /^\d+\s+X-PHP-Script: (\S+) for (\S+)/ ) {
+                ('script' => $1, 'script_ip' => $2);
+            }
+            elsif ( $eod and /^\d+\s+X-Boxtrapper:/ ) {
+                ('boxtrapper' => 1);
+            }
+            elsif ( /^\d+\s+Subject: (.*)/ ) {
+                ('subject' => $1);
+            }
             elsif ( $eod and ( $line_no - $eod <= $num_recipients) ) {
                 push @recipients, lc($_);
                 ();
             }
             elsif ( $eod and ( $line_no - $eod > $num_recipients) ) {
                 ('recipients' => \@recipients);
-            }
-            elsif ( $eod and /^\d+\s+X-PHP-Script: (\S+) for (\S+)/ ) {
-                $data_ref->{'mail_ids'}{$mail_id}{'script'} = $1;
-                $data_ref->{'mail_ids'}{$mail_id}{'script_ip'} = $2;
             }
             else {
                 ();
@@ -1160,6 +1341,9 @@ sub parse_queued_mail_data {
             }
         }
     
+        $h_ref->{'who'} = who($data_ref, $h_ref);
+        $h_ref->{'in_queue'} = 1;
+        $data_ref->{'total_queue'}++;
     }
 }
 
@@ -1278,11 +1462,15 @@ sub who {
     my ($data, $email) = @_;
     my $who = '(unknown)';
     for (qw(ident auth_id auth_sender source)) {
-        $who = $email->{$_} if exists $email->{$_}
+        if (exists $email->{$_}) {
+            $who = $email->{$_};
+            last
+        }
     }
     if ($who =~ /@(.*)/ and exists $data->{'domain2user'}{$1}) {
-        $who = "$who ($data->{'domain2user'}{$1})"
+        $who = $data->{'domain2user'}{$1};
     }
+    $who
 }
 
 # sending 200 emails each to 2 of 2 total addresses = OK
@@ -1297,8 +1485,8 @@ sub analyze_num_recipients {
     # add suspect: anything with more than one recipient
     for my $email (values %{$data->{'mail_ids'}}) {
         next unless $email->{'num_recipients'} > 1;
-        $suspects{who($data, $email)}{$_} = 1 for @{$email->{'recipients'}};
-        $emails{who($data, $email)}++;
+        $suspects{$email->{'who'}}{$_} = 1 for @{$email->{'recipients'}};
+        $emails{$email->{'who'}}++;
     }
 
     # confirm suspect: anything passing SUSP.NR1
@@ -1401,7 +1589,7 @@ use YAML::Syck qw(LoadFile DumpFile);
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
 my $logpath = "/opt/hgmods/logs/spamreport.dat";
-my $MAX_RETAINED = 4;
+our $MAX_RETAINED = 4;
 
 sub load {
     my ($path) = @_;
@@ -1564,6 +1752,8 @@ sub check_options {
         'cron'        => \$OPTS{'cron'},
         'save'        => \$OPTS{'save'},
         'load=s'      => \$OPTS{'load'},
+        'user|u=s'      => \$OPTS{'user'},
+        'keep=i'      => \$SpamReport::Recent::MAX_RETAINED,
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
@@ -1606,6 +1796,12 @@ sub check_options {
     if ($OPTS{'latest'} and $OPTS{'load'}) {
         die "only zero or one of --latest and --load can be provided"
     }
+    if (($OPTS{'latest'} or $OPTS{'load'}) and $OPTS{'save'}) {
+        die "--latest/--load is incompatible with --save (we wouldn't have any new data to save)"
+    }
+    $OPTS{'latest'} = 1 if $OPTS{'user'} and !$OPTS{'load'};
+
+
     if ($OPTS{'latest'} or $OPTS{'load'}) {
         $OPTS{'run_sections'} = []
     }
@@ -1876,6 +2072,16 @@ sub main {
         $data->{'OPTS'} = \%OPTS;
     }
 
+    if (defined $OPTS{'user'}) {
+        if (exists $data->{'domain2user'}{$OPTS{'user'}}) {
+            print "Assuming you mean $data->{'domain2user'}{$OPTS{'user'}} by $OPTS{'user'}\n";
+            $OPTS{'user'} = $data->{'domain2user'}{$OPTS{'user'}};
+        }
+        if (!getpwnam($OPTS{'user'})) {
+            die "No such user: $OPTS{'user'}"
+        }
+    }
+
     for my $section ( @{ $OPTS{'run_sections'} } ) {
         $sections{$section}($data);
     }
@@ -1886,7 +2092,12 @@ sub main {
     else {
         SpamReport::Recent::save($data) if $OPTS{'save'};
         SpamReport::Output::analyze_results($data);
-        SpamReport::Output::print_results($data) unless $OPTS{'cron'};
+        if ($OPTS{'user'}) {
+            SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
+            SpamReport::Output::print_user_results($data, $OPTS{'user'});
+        } else {
+            SpamReport::Output::print_results($data) unless $OPTS{'cron'};
+        }
     }
 }
 
@@ -1920,10 +2131,13 @@ Options:
 
                 | --dbs                 : check exim databases
 
+    -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
+
                 | --cron                : gather data and save it, without analysis or output
                 | --save                : save data before analysis, while operating normally
                 | --latest              : load data from last --save or --cron
                 | --load=path/to/file   : load data from file
+                | --keep=<number>       : preserve # of rotated logs
 
                 | --help
                 | --man
