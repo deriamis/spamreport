@@ -210,9 +210,30 @@ sub print_results {
     print_queue_results($data) if exists $data->{'queue_top'};
     print_recipient_results($data) if exists $data->{'suspects'}{'num_recipients'};
     print_script_results($data);
-    print_login_results($data) if exists $data->{'suspects'}{'logins'};
+    print_responsibility_results($data) if $data->{'emails'};
+    #print_login_results($data) if exists $data->{'suspects'}{'logins'};
 
     1;
+}
+
+sub print_responsibility_results {
+    my ($data) = @_;
+    my $emails = $data->{'emails'};
+    my %r = %{$data->{'responsibility'}};
+    my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
+    my @r = sort { $r{$a} <=> $r{$b} } grep { $r{$_} / $emails > $cutoff } keys %r;
+    if (@r < 5) {
+        @r = grep { defined $_ } reverse((sort { $r{$b} <=> $r{$a} } keys %r)[0..4])
+    }
+    my @width = (0, 0);
+    for (@r) {
+        $width[0] = length($r{$_}) if $r{$_} > $width[0];
+        $width[1] = length(sprintf "%.1f", 100*$r{$_}/$emails) if length(sprintf "%.1f", $r{$_}) > $width[1]
+    }
+    print "\nResponsibility for $data->{'emails'} emails:\n";
+    for (@r) {
+        printf "%$width[0]d %$width[1].1f%% $_\n", $r{$_}, 100*$r{$_}/$emails
+    }
 }
 
 sub print_recipient_results {
@@ -233,15 +254,28 @@ sub print_recipient_results {
 
 sub print_script_results {
     my ($data) = @_;
-    for (sort { $data->{'scriptdirs'}{$a} <=> $data->{'scriptdirs'}{$b} } keys %{$data->{'scriptdirs'}}) {
-        print "$data->{'scriptdirs'}{$_} $_\n"
+    my $scripts; $scripts += $data->{'scriptdirs'}{$_} for keys %{$data->{'scriptdirs'}};
+    my @r = sort { $data->{'scriptdirs'}{$a} <=> $data->{'scriptdirs'}{$b} } grep { $data->{'scriptdirs'}{$_}/$scripts > 0.01 } keys %{$data->{'scriptdirs'}};
+    if (@r < 5) {
+        @r = grep { defined $_ } reverse((sort { $data->{'scriptdirs'}{$a} <=> $data->{'scriptdirs'}{$b} } keys %{$data->{'scriptdirs'}})[0..4]);
     }
-    for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
-        print "$data->{'script'}{$_} $_\n"
+    my @width = (0, 0);
+    for (@r) {
+        $width[0] = length($data->{'scriptdirs'}{$_}) if length($data->{'scriptdirs'}{$_}) > $width[0];
+        $width[1] = length(sprintf "%.1f", 100*$data->{'scriptdirs'}{$_}/$scripts)
+            if length(sprintf "%.1f", 100*$data->{'scriptdirs'}{$_}/$scripts) > $width[1];
     }
-    for (sort { $data->{'script_ip'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script_ip'}}) {
-        print "$data->{'script_ip'}{$_} $_\n"
+
+    print "\nResponsibility for $scripts script working directrories:\n";
+    for (@r) {
+        printf "%$width[0]d %$width[1].1f%% $_\n", $data->{'scriptdirs'}{$_}, 100*$data->{'scriptdirs'}{$_}/$scripts
     }
+    #for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
+    #    print "$data->{'script'}{$_} $_\n"
+    #}
+    #for (sort { $data->{'script_ip'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script_ip'}}) {
+    #    print "$data->{'script_ip'}{$_} $_\n"
+    #}
 }
 
 sub print_login_results {
@@ -272,10 +306,14 @@ sub print_queue_results {
     for my $field (keys %{$data->{'queue_top'}}) {
         push @results, top(fieldcolor($field) => $data->{'queue_top'}{$field})
     }
+
+    my $queue = 0; for (values %{$data->{'mail_ids'}}) { $queue++ if $_->{'in_queue'} }
+
+    print "\nResponsibility for $queue emails in the exim queue:\n";
     
     # display results with more related emails than 3% of the number of emails in the queue
     # ... or if this results in no output, display all fields
-    for my $sig (0.03 * scalar(keys %{$data->{'mail_ids'}}), 1) {
+    for my $sig (0.03 * $queue, 1) {
         for (sort { $a->[0] <=> $b->[0] } grep { $_->[0] > $sig } @results) {
             $output = 1;
             print "$_->[0] $_->[1]\n"
@@ -314,8 +352,10 @@ sub analyze_user_results {
             $boxtrapper++ if $email->{'boxtrapper'};
             if ($email->{'host_auth'} =~ /^dovecot_/) {
                 $sent{$email->{'host_auth'} . ':' . $email->{'auth_sender'}}++;
-            } else {
+            } elsif ($email->{'auth_sender'}) {
                 $sent{$email->{'auth_sender'}}++;
+            } elsif ($email->{'received_protocol'} eq 'local' && $email->{'ident'}) {
+                $sent{$email->{'ident'}}++;
             }
             if (exists $email->{'host_address'}) {
                 $ips{$email->{'host_address'}}++
@@ -401,7 +441,8 @@ sub print_user_results {
     $sent_as{$_} += $u->{'bounce_addresses'}{$_} for keys %{$u->{'bounce_addresses'}};
 
     my $total = $u->{'sent'} + $u->{'bounce'};
-    my $total ||= 'NaN';
+    $total ||= 'NaN';
+    $u->{'boxtrapper'} ||= 0;
 
     print <<"REPORT";
 Reference: spamreport
@@ -1257,6 +1298,7 @@ sub parse_queued_mail_data {
         my $num_recipients = 0;
         my @recipients;
         my ($mail_id) = $new_mail[$i] =~ m{/([^/]+)-H};
+        my $new_email;
 
         # this rigamorale avoids: readline() on closed filehandle $fh at spamreport.pl...
         my @lines;
@@ -1266,6 +1308,10 @@ sub parse_queued_mail_data {
                 close $fh;
         }; next if $@;
 
+        unless (exists $data_ref->{'mail_ids'}{$mail_id}) {
+            $data_ref->{'emails'}++;
+            $new_email = 1;
+        }
         %{$data_ref->{'mail_ids'}{$mail_id}} = map {
             chomp;
             $line_no++;
@@ -1342,108 +1388,76 @@ sub parse_queued_mail_data {
         }
     
         $h_ref->{'who'} = who($data_ref, $h_ref);
+        $data_ref->{'responsibility'}{$h_ref->{'who'}} if $new_email and $h_ref->{'who'} !~ /@/;
         $h_ref->{'in_queue'} = 1;
         $data_ref->{'total_queue'}++;
     }
 }
 
 sub parse_exim_mainlog {
-    my ($lines, $year, $end_time, $data_ref) = @_;
+    my ($lines, $year, $end_time, $data_ref, $in_zone) = @_;
+    my @lines = @$lines;
+    my %days = %{$data_ref->{'OPTS'}{'exim_days'}};
 
-    # sender = $
-    # sender_domain = $
-    # recipients = []
-    # recipient_domains = []
-    # num_recipients = $
-    # type = ( bounce, local, login, relay )
-    # state = ( queued, frozen, thawed, completed )
-    # source = ( helo, username )
-    # location = ( log, queue, delivered )
+    unless ($in_zone->[0]) {
+        if (exists $days{substr($lines[0],0,10)} or
+            exists $days{substr($lines[$#lines],0,10)}) {
+            $in_zone->[0] = 1
+        }
+        else {
+            return
+        }
+    }
+    for my $line ( @lines ) {
+        unless (exists $days{substr($line,0,10)}) {
+            $in_zone->[0] = 0;
+            return
+        }
 
-    my $n = 0;
-    my %indicator_map = map { $_ => $statuses[$n++] } @indicators;
-    $n = 0;
-
-    my %state_order = map { $_ => $n } @statuses;
-    my @time = CORE::localtime(time);
-    my $tz_offset = timegm(@time) - timelocal(@time);
-
-    for my $line ( @{$lines} ) {
-
-        if ( $line =~ $RE{'exim'}{'info'}{'script'} ) {
+        if ( substr($line,20,4) eq 'cwd=' && $line =~ $RE{'exim'}{'info'}{'script'} ) {
             $data_ref->{'scriptdirs'}{$1}++;
             next
         }
-        next if ( $line !~ m/$RE{'exim'}{'message'}/ );
-
-        my %log_data = (
-            'timestamp' => $1,
-            'mail_id' => $2,
-            'indicator' => $3,
-            'message' => $4,
-        );
-        my %mail_flags = ();
-
-        if ( $2 =~ m/$RE{'exim'}{'info'}{'timestamp'}/ ) {
-            $log_data{'unixtime'} = timegm($7, $6, $5, $4, $3 - 1, $2) - $tz_offset;
-        }
-
-        return undef if not $log_data{'unixtime'};
-        return 1 if ( $log_data{'unixtime'} > $end_time );
-
-        my $mail_state = $indicator_map{$log_data{'indicator'}};
-        my $mail_id = $log_data{'mail_id'};
-        my $mail_data = $data_ref->{'mail_ids'}{$mail_id} if $mail_id;
-
-        next if ( $mail_state ne 'input' and not $mail_data );
-
-        $mail_data->{'state'} = $mail_state
-            if ( not exists $mail_data->{'state'} or ($state_order{$mail_data->{'state'}} < $state_order{$mail_state}) );
-        $mail_data->{'location'} = 'log' if ( $mail_data->{'location'} ne 'queue' );
-
-        if ( $mail_state eq 'input' ) {
-            if ( $log_data{'message'} =~ m/$RE{'exim'}{'inbound'}{'remote'}|$RE{'exim'}{'inbound'}{'local'}/ ) {
-                $mail_data->{'sender'} = $2;
-                $mail_data->{'flags'}{'input'} = $4;
+        my $mailid = substr($line,20,16);
+        $data_ref->{'emails'}++ unless exists $data_ref->{'mail_ids'}{$mailid};
+        
+        if (substr($line,37,5) eq '<= <>') {
+            $line =~ s/T=".*?(?<!\\)" //;
+            next unless $line =~ / for (\S+)$/;
+            my $to = $1;
+            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$to];
+            if ($to =~ /\@(\S+)/ and exists $data_ref->{'domain2user'}{$1}) {
+                my $user = $data_ref->{'domain2user'}{$1};
+                $data_ref->{'responsibility'}{$user}++;
+                $data_ref->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
+                $data_ref->{'who'} = $user;
             }
+            $data_ref->{'mail_ids'}{$mailid}{'type'} = 'bounce';
         }
-        elsif ( $mail_state eq 'output' || $mail_state eq 'continued' || $mail_state eq 'cutthrough' ) {
-            if ( $log_data{'message'} =~ m/$RE{'exim'}{'delivery'}/ ) {
-                $mail_data->{'recipient'} = $2;
-                $mail_data->{'flags'}{'output'}{$2} = $3;
-            }
-        }
-        elsif ( $mail_state eq 'connect' ) {
-            if ( $log_data{'message'} =~ m/$RE{'exim'}{'outbound'}/ ) {
-                $mail_data->{'connect_timestamp'} = $2;
-                $mail_data->{'parent_id'} = $3;
-                $mail_data->{'sender_domain'} = $4;
-            }
-        }
-        elsif ( $mail_state eq 'deferred' ) {
-
-        }
-        elsif ( $mail_state eq 'bounced' ) {
-
-        }
-        elsif ( $mail_state eq 'complete' ) {
-            $mail_data->{'location'} = 'delivered';
-
-            my %flags = $mail_data->{'flags'}{'input'} =~ m/$RE{'exim'}{'info'}{'fields'}/;
-            $mail_data->{'from_cron'} = $flags{'T'} =~ m/^(?:Cron|Anacron)/ ? 1 : 0;
-
-            for my $recipient ( keys %{ $mail_data->{'flags'}{'output'} } ) {
-            }
+        elsif (substr($line,37,2) eq '<=' && $line =~ s/T="(.*?)(?<!\\)" //) {
+            my $subject = $1;
+            $line =~ /<= (\S+)/;
+            my $from = $1;
+            $line =~ / for (\S+)$/;
+            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$1] if defined $1;
+            $data_ref->{'mail_ids'}{$mailid}{'sender'} = $from;
+            if ($from =~ /\S+?@(\S+)/) { $data_ref->{'mail_ids'}{$mailid}{'sender_domain'} = $1 }
+            $data_ref->{'mail_ids'}{$mailid}{'subject'} = $subject;
+            $data_ref->{'mail_ids'}{$mailid}{'auth_sender'} = $1 if $line =~ / A=dovecot_\S+:(\S+)/;
+            $data_ref->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
+            $data_ref->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
+            $data_ref->{'mail_ids'}{$mailid}{'who'} = who($data_ref, $data_ref->{'mail_ids'}{$mailid});
+            $data_ref->{'responsibility'}{$data_ref->{'mail_ids'}{$mailid}{'who'}}
+                unless $data_ref->{'mail_ids'}{$mailid}{'who'} =~ /@/;
         }
     }
-
-    1;
 }
 
 sub analyze_queued_mail_data {
     my ($data) = @_;
 
     for my $email (values %{$data->{'mail_ids'}}) {
+        next unless $email->{'in_queue'};
         $data->{'script'}{$email->{'script'}}++ if exists $email->{'script'};
         for (qw(source auth_id ident auth_sender sender sender_domain)) {
             next if $_ eq 'sender' && $email->{sender} eq 'mailer-daemon';
@@ -1461,7 +1475,7 @@ sub analyze_queued_mail_data {
 sub who {
     my ($data, $email) = @_;
     my $who = '(unknown)';
-    for (qw(ident auth_id auth_sender source)) {
+    for (qw(ident auth_id auth_sender source sender)) {
         if (exists $email->{$_}) {
             $who = $email->{$_};
             last
@@ -1643,11 +1657,26 @@ my @months = qw[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec];
 my %month_to_ord = map {$months[$_] => $_} (0 .. $#months);
 
 sub find_dovecot_logins {
-    my ($lines, $year, $end_time, $data_ref) = @_;
+    my ($lines, $year, $end_time, $data_ref, $in_zone) = @_;
+    my @lines = @$lines;
+    my %days = %{$data_ref->{'OPTS'}{'dovecot_days'}};
     
-    for (@$lines) {
+    unless ($in_zone->[0]) {
+        if (exists $days{substr($lines[0],0,6)} or
+            exists $days{substr($lines[$#lines],0,6)}) {
+            $in_zone->[0] = 1
+        }
+        else {
+            return
+        }
+    }
+    for (@lines) {
+        unless (exists $days{substr($_,0,6)}) {
+            $in_zone->[0] = 0;
+            return
+        }
+        next unless $_ =~ $data_ref->{'OPTS'}{'dovecot_days'};
         if ( /Login: user=<(?!__cpanel)(\S+?)>/ ) {
-            last if /^$data_ref->{'OPTS'}{'dovecot_end'} /;
             my $login = $1;
             $data_ref->{'logins'}{$login}{'total_logins'}++;
             if ( /rip=(?!127\.0\.0\.1)(?!$main_ip)(\S+?),/ ) {
@@ -1722,11 +1751,12 @@ my %OPTS = (
     'end_time'      => scalar CORE::localtime($now),
     'timespec'      => '',
     'search_create' => undef,
-    'max_queue'     => 10000,
+    'max_queue'     => 100000,
     'check_queue'   => 1,
     'check_dbs'     => 1,
     'run_sections'  => undef,
     'read_lines'    => 10000,
+    'r_cutoff'      => 1.0,
 );
 
 my $hostname = hostname_long();
@@ -1752,7 +1782,8 @@ sub check_options {
         'cron'        => \$OPTS{'cron'},
         'save'        => \$OPTS{'save'},
         'load=s'      => \$OPTS{'load'},
-        'user|u=s'      => \$OPTS{'user'},
+        'user|u=s'    => \$OPTS{'user'},
+        'cutoff=i'    => \$OPTS{'r_cutoff'},
         'keep=i'      => \$SpamReport::Recent::MAX_RETAINED,
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
@@ -1806,7 +1837,22 @@ sub check_options {
         $OPTS{'run_sections'} = []
     }
 
-    $OPTS{'dovecot_end'} = POSIX::strftime("%a %d", @time);
+
+    my (%dovecot, %exim);
+    for (my $i = $OPTS{'end_time'}; $i > $OPTS{'start_time'}; $i -= 3600 * 24) {
+        $exim{POSIX::strftime("%F", CORE::localtime($i))}++;
+        $dovecot{POSIX::strftime("%b %d", CORE::localtime($i))}++;
+    }
+    $OPTS{'dovecot_days'} = \%dovecot;
+    $OPTS{'exim_days'} = \%exim;
+
+    my (%dovecotpost, %eximpost);
+    for (my $i = $OPTS{'end_time'} + 3600 * 24; $i < $OPTS{'end_time'} + 3600 * 24 * 4; $i += 3600 * 24) {
+        $eximpost{POSIX::strftime("%F", CORE::localtime($i))}++;
+        $dovecotpost{POSIX::strftime("%b %d", CORE::localtime($i))}++;
+    }
+    $OPTS{'dovecot_postdays'} = \%dovecotpost;
+    $OPTS{'exim_postdays'} = \%eximpost;
 
     return $result;
 }
@@ -1976,6 +2022,7 @@ sub parse_logs {
         my $year = (CORE::localtime($mtime))[5];
         my $allow_year_dec = 1;
         my $lines;
+        my $in_zone = [0];
 
         my $log = File::Nonblock::open($logfile, 8*1024) or die "Could not open $logfile";
 
@@ -1987,7 +2034,7 @@ sub parse_logs {
                 show_progress($log, 'Reading')
             }
 
-            $handler->($lines, $year, $OPTS{'end_time'}, $data);
+            $handler->($lines, $year, $OPTS{'end_time'}, $data, $in_zone);
 
             $allow_year_dec = 0;
         }
@@ -2124,6 +2171,8 @@ Options:
     -s <time>   | --start=<time>
     -e <time>   | --end=<time>
     -h <hours>  | --hours=<hours>
+        (default: 72 hours)
+        (NB. spamreport has a minimum granularity of one calendar day)
 
                 | --current             : check the exim queue
     -m          | --max                 : check the entire queue
