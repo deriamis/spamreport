@@ -1598,7 +1598,8 @@ $INC{'SpamReport/Exim/DB.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Recent;
 use common::sense;
-use YAML::Syck qw(LoadFile DumpFile);
+#use YAML::Syck qw(LoadFile DumpFile);
+use Storable;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
@@ -1608,13 +1609,15 @@ our $MAX_RETAINED = 4;
 sub load {
     my ($path) = @_;
     $path = $logpath unless defined $path;
-    LoadFile($path);
+    #LoadFile($path);
+    retrieve($path);
 }
 
 sub save {
     my ($data) = @_;
     rotate();
-    DumpFile($logpath, $data);
+    #DumpFile($logpath, $data);
+    store $data, $logpath;
 }
 
 sub rotate {
