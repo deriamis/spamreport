@@ -231,7 +231,7 @@ sub print_responsibility_results {
         $width[1] = length(sprintf "%.1f", 100*$r{$_}/$emails) if length(sprintf "%.1f", $r{$_}) > $width[1]
     }
     print "\nResponsibility for $data->{'emails'} emails:\n";
-    for (@r) {
+    for (reverse @r) {
         printf "%$width[0]d %$width[1].1f%% $_\n", $r{$_}, 100*$r{$_}/$emails
     }
 }
@@ -246,7 +246,7 @@ sub print_recipient_results {
     }
     
     my %h = %{$data->{'suspects'}{'num_recipients'}};
-    for (sort { $h{$a}->{ratio} <=> $h{$b}->{ratio} } keys %h) {
+    for (reverse sort { $h{$a}->{ratio} <=> $h{$b}->{ratio} } keys %h) {
         printf "%$widths[0]d %$widths[1]d %.4f num_recipients: $_\n",
             $h{$_}->{'emails'}, $h{$_}->{'addresses'}, $h{$_}->{'ratio'};
     }
@@ -267,7 +267,7 @@ sub print_script_results {
     }
 
     print "\nResponsibility for $scripts script working directrories:\n";
-    for (@r) {
+    for (reverse @r) {
         printf "%$width[0]d %$width[1].1f%% $_\n", $data->{'scriptdirs'}{$_}, 100*$data->{'scriptdirs'}{$_}/$scripts
     }
     #for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
@@ -287,7 +287,7 @@ sub print_login_results {
         $width[0] = $lo if $width[0] < $lo;
         $width[1] = $pr if $width[1] < $pr;
     }
-    for my $login (sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
+    for my $login (reverse sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
         my @ips = sort { $h{$login}{'logins_from'}{$b} <=> $h{$login}{'logins_from'}{$a} } keys %{$h{$login}{'logins_from'}};
         my @counts = map { $h{$login}{'logins_from'}{$_} } @ips;
         printf "%$width[0]d %$width[1]d $login   %s(%d) %s(%d) %s(%d)\n",
@@ -314,7 +314,7 @@ sub print_queue_results {
     # display results with more related emails than 3% of the number of emails in the queue
     # ... or if this results in no output, display all fields
     for my $sig (0.03 * $queue, 1) {
-        for (sort { $a->[0] <=> $b->[0] } grep { $_->[0] > $sig } @results) {
+        for (reverse sort { $a->[0] <=> $b->[0] } grep { $_->[0] > $sig } @results) {
             $output = 1;
             print "$_->[0] $_->[1]\n"
         }
