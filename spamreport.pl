@@ -373,7 +373,7 @@ sub analyze_user_results {
     }
     for (keys %{$data->{'scriptdirs'}}) {
         next unless m,^/[^/]+/$user/,;
-        $cwd{$_}++
+        $cwd{$_} += $data->{'scriptdirs'}{$_}
     }
 
     $data->{'suspects'}{'users'}{$user} = {
@@ -428,6 +428,25 @@ sub remainder {
     return "\n\nThere were @{[commify($rest)]} additional $title trimmed."
 }
 
+sub boxtrapper {
+    my ($u, $total) = @_;
+    return unless $u->{'boxtrapper'};
+    return <<BOX
+Boxtrapper was responsible for @{[commify($u->{'boxtrapper'})]} sent emails, or @{[sprintf "%.2f%%", 100*$u->{'boxtrapper'}/$total]} of the emails.
+
+BOX
+}
+
+sub php_scripts {
+    my ($u) = @_;
+    return unless [values(%{$u->{'script'}})]->[0];
+    return <<BOX
+PHP Scripts:
+------------
+@{[sample($u->{'script'}, "PHP scripts")]}
+BOX
+}
+
 sub print_user_results {
     my ($data, $user) = @_;
     my $u = $data->{'suspects'}{'users'}{$user}
@@ -454,9 +473,7 @@ Reference: spamreport
 User sent approximately @{[commify($u->{'sent'})]} messages to @{[commify($u->{'recipients'})]} unique recipients.
 There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addresses'})]} unique addresses, @{[sprintf "%.2f%%", 100*$u->{'bounce'}/$total]} of the emails.
 
-Boxtrapper was responsible for @{[commify($u->{'boxtrapper'})]} sent emails, or @{[sprintf "%.2f%%", 100*$u->{'boxtrapper'}/$total]} of the emails.
-
-Email addresses sent from:
+@{[boxtrapper($u, $total)]}Email addresses sent from:
 --------------------------
 @{[sample(\%sent_as, "sender addresses")]}
 
@@ -468,11 +485,7 @@ Current working directories:
 ----------------------------
 @{[sample($u->{'cwd'}, "working directories")]}
 
-PHP Scripts:
-------------
-@{[sample($u->{'script'}, "PHP scripts")]}
-
-Random recipient addresses:
+@{[php_scripts($u)]}Random recipient addresses:
 ---------------------------
 @{[join "\n",
     grep { defined $_ }
@@ -1398,6 +1411,12 @@ sub parse_exim_mainlog {
     my ($lines, $year, $end_time, $data_ref, $in_zone) = @_;
     my @lines = @$lines;
     my %days = %{$data_ref->{'OPTS'}{'exim_days'}};
+    if ($data_ref->{'OPTS'}{'datelimit'} eq 'not today') {
+        delete $days{$data_ref->{'OPTS'}{'exim_today'}};
+    }
+    elsif ($data_ref->{'OPTS'}{'datelimit'} eq 'only today') {
+        %days = ($data_ref->{'OPTS'}{'exim_today'} => 1);
+    }
 
     unless ($in_zone->[0]) {
         if (exists $days{substr($lines[0],0,10)} or
@@ -1600,11 +1619,54 @@ package SpamReport::Recent;
 use common::sense;
 #use YAML::Syck qw(LoadFile DumpFile);
 use Storable;
+use POSIX qw(strftime);
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
 my $logpath = "/opt/hgmods/logs/spamreport.dat";
+my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
 our $MAX_RETAINED = 4;
+
+sub loadcron {
+    my ($path) = @_;
+    return retrievecron($path) if defined $path;
+    return unless -e $cronpath;
+    $path = $cronpath;
+    # if the *calendar date* of $path is the same as today's
+    if (POSIX::strftime("%F", localtime()) eq POSIX::strftime("%F", localtime((stat($path))[9]))) {
+        return retrievecron($path)
+    }
+    else {
+        rotatecron();
+    }
+    return;
+}
+
+my %cronkeys = map { ($_, 1) } qw(dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders);
+sub savecron {
+    my ($data) = @_;
+    my %newdata;
+    for (keys %$data) {
+        $newdata{$_} = $data->{$_}
+    }
+    store \%newdata, $cronpath;
+}
+
+sub exitsavecron {
+    my ($data) = @_;
+    for (keys %$data) {
+        delete $data->{$_} unless exists $cronkeys{$_}
+    }
+    #DumpFile($cronpath, $data);
+    store $data, $cronpath;
+    exit
+}
+
+sub retrievecron {
+    my ($path) = @_;
+    my $data = retrieve($path);
+    $data
+}
 
 sub load {
     my ($path) = @_;
@@ -1621,15 +1683,19 @@ sub save {
 }
 
 sub rotate {
-    my @logs = sort { -M $a <=> -M $b } glob "$logpath*";
+    my ($path) = @_;
+    $path = $logpath unless defined $path;
+    my @logs = sort { -M $a <=> -M $b } glob "$path*";
     unlink for @logs[$MAX_RETAINED..$#logs];
     for (sort { -M $b <=> -M $a } @logs) {
         next unless /.(\d+)$/;
         my ($this, $next) = ($1, $1 + 1);
-        rename "$logpath.$this", "$logpath.$next";
+        rename "$path.$this", "$path.$next";
     }
-    rename $logpath, "$logpath.1";
+    rename $path, "$path.1";
 }
+
+sub rotatecron { rotate($cronpath) }
 
 1;
 } # end module SpamReport::Recent
@@ -1640,8 +1706,7 @@ $INC{'SpamReport/Recent.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Maillog;
 
-use strict;
-use warnings;
+use common::sense;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
@@ -1663,6 +1728,12 @@ sub find_dovecot_logins {
     my ($lines, $year, $end_time, $data_ref, $in_zone) = @_;
     my @lines = @$lines;
     my %days = %{$data_ref->{'OPTS'}{'dovecot_days'}};
+    if ($data_ref->{'OPTS'}{'datelimit'} eq 'not today') {
+        delete $days{$data_ref->{'OPTS'}{'dovecot_today'}};
+    }
+    elsif ($data_ref->{'OPTS'}{'datelimit'} eq 'only today') {
+        %days = ($data_ref->{'OPTS'}{'dovecot_today'} => 1);
+    }
     
     unless ($in_zone->[0]) {
         if (exists $days{substr($lines[0],0,6)} or
@@ -1709,8 +1780,7 @@ $INC{'SpamReport/Maillog.pm'} = '/dev/null';
 { # begin main package
 package SpamReport;
 
-use strict;
-use warnings;
+use common::sense;
 use 5.008_008; use v5.8.8;
 
 use vars qw/$VERSION/;
@@ -1826,7 +1896,6 @@ sub check_options {
     $OPTS{'max_queue'} = 0 if $check_queue;
     $OPTS{'check_queue'} = $check_queue;
 
-    $OPTS{'save'} = 1 if $OPTS{'cron'};
     if ($OPTS{'latest'} and $OPTS{'load'}) {
         die "only zero or one of --latest and --load can be provided"
     }
@@ -1848,6 +1917,8 @@ sub check_options {
     }
     $OPTS{'dovecot_days'} = \%dovecot;
     $OPTS{'exim_days'} = \%exim;
+    $OPTS{'exim_today'} = POSIX::strftime("%F", CORE::localtime());
+    $OPTS{'dovecot_today'} = POSIX::strftime("%b %d", CORE::localtime());
 
     my (%dovecotpost, %eximpost);
     for (my $i = $OPTS{'end_time'} + 3600 * 24; $i < $OPTS{'end_time'} + 3600 * 24 * 4; $i += 3600 * 24) {
@@ -2017,6 +2088,9 @@ sub parse_exim_queue {
 
 sub parse_logs {
     my ($data, $handler, @logs) = @_;
+    if ($data->{'OPTS'}{'datelimit'} eq 'only today') {
+        @logs = grep { -M $_ < 1 } @logs
+    }
 
     for my $logfile (sort { -M $b <=> -M $a } @logs) {
         my $end_reached;
@@ -2052,7 +2126,9 @@ sub parse_logs {
 }
 
 sub parse_cpanel_logs {
-    parse_logs(shift, \&SpamReport::Cpanel::find_email_creation, glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}');
+    my ($data) = @_;
+    return if $data->{'OPTS'}{'datelimit'} eq 'not today';
+    parse_logs($data, \&SpamReport::Cpanel::find_email_creation, glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}');
 }
 
 sub parse_exim_logs {
@@ -2064,6 +2140,7 @@ sub parse_dovecot_logs {
 
 sub setup_cpanel {
     my ($data_ref) = @_;
+    my $new;
 
     my $userdomains_path = '/etc/userdomains';
     my $trueuserowners_path = '/etc/trueuserowners';
@@ -2083,7 +2160,7 @@ sub setup_cpanel {
         'check_logins' => \&parse_dovecot_logs,
     );
 
-    %{ $data_ref } = map {
+    %{ $new } = map {
 
         my $data_path = $_ eq 'user:domain' ? $userdomains_path
                       : $_ eq 'user:owner'  ? $trueuserowners_path
@@ -2100,16 +2177,24 @@ sub setup_cpanel {
 
     } keys %factories;
 
+    $data_ref->{$_} = $new->{$_} for keys %$new;
+
     1;
 }
 
 sub main {
     my $data = {};
+    my $loadedcron;
 
     STDOUT->autoflush(1);
     STDERR->autoflush(1);
 
     check_options() or pod2usage(2);
+
+    unless ($OPTS{'latest'} or $OPTS{'cron'}) {
+        $data = SpamReport::Recent::loadcron($OPTS{'loadcron'});
+        $loadedcron = 1 if $data;
+    }
 
     if ($OPTS{'load'} or $OPTS{'latest'}) {
         $data = SpamReport::Recent::load($OPTS{'load'}) if $OPTS{'load'};
@@ -2132,15 +2217,31 @@ sub main {
         }
     }
 
-    for my $section ( @{ $OPTS{'run_sections'} } ) {
-        $sections{$section}($data);
+    if ($OPTS{'cron'}) {
+        $OPTS{'datelimit'} = 'not today';
+        for my $section ( @{ $OPTS{'run_sections'} } ) {
+            next if $section eq 'check_queue';
+            $sections{$section}($data);
+        }
+        SpamReport::Recent::exitsavecron($data);
+    }
+    elsif ($loadedcron) {
+        $OPTS{'datelimit'} = 'only today';
+        for my $section ( @{ $OPTS{'run_sections'} } ) {
+            $sections{$section}($data);
+        }
+    }
+    else {
+        for my $section ( @{ $OPTS{'run_sections'} } ) {
+            $sections{$section}($data);
+        }
     }
 
     if ( $OPTS{'sections'} ) {
         SpamReport::Output::email_search_results($data);
     }
     else {
-        SpamReport::Recent::save($data) if $OPTS{'save'};
+        SpamReport::Recent::save($data) unless $OPTS{'latest'} or $OPTS{'load'};
         SpamReport::Output::analyze_results($data);
         if ($OPTS{'user'}) {
             SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
@@ -2185,10 +2286,10 @@ Options:
 
     -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
 
-                | --cron                : gather data and save it, without analysis or output
-                | --save                : save data before analysis, while operating normally
-                | --latest              : load data from last --save or --cron
+                | --cron                : gather crondata and save it, without analysis or output
+                | --latest
                 | --load=path/to/file   : load data from file
+                | --loadcron=/to/file   : load crondata from file
                 | --keep=<number>       : preserve # of rotated logs
 
                 | --help
