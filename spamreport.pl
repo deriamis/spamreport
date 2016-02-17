@@ -1314,6 +1314,52 @@ my @labels = qw( ident received_protocol auth_id auth_sender
                      helo_name host_address host_auth interface_address frozen);
 my @flags  = qw( deliver_firsttime host_lookup_failed local localerror );
 
+# https://github.com/mailcheck/mailcheck/wiki/List-of-Popular-Domains
+my ($dubious_domains) = map { qr/^(?:$_)$/i } join "|", map { quotemeta $_ } (
+    qw( aol.com att.net comcast.net facebook.com gmail.com gmx.com googlemail.com
+        google.com hotmail.com hotmail.co.uk mac.com me.com mail.com msn.com
+        live.com sbcglobal.net verizon.net yahoo.com yahoo.co.uk ),
+
+    # Other global domains
+    qw( email.com games.com gmx.net hush.com hushmail.com icloud.com inbox.com
+        lavabit.com love.com outlook.com pobox.com rocketmail.com
+        safe-mail.net wow.com ygm.com ymail.com zoho.com fastmail.fm ),
+
+    # United States ISP domains
+    qw( bellsouth.net charter.net comcast.net cox.net earthlink.net juno.com ),
+
+    # British ISP domains
+    qw( btinternet.com virginmedia.com blueyonder.co.uk freeserve.co.uk live.co.uk
+        ntlworld.com o2.co.uk orange.net sky.com talktalk.co.uk tiscali.co.uk
+        virgin.net wanadoo.co.uk bt.com ),
+
+    # Domains used in Asia
+    qw( sina.com qq.com naver.com hanmail.net daum.net nate.com yahoo.co.jp
+        yahoo.co.kr yahoo.co.id yahoo.co.in yahoo.com.sg yahoo.com.ph ),
+
+    # French ISP domains
+    qw( hotmail.fr live.fr laposte.net yahoo.fr wanadoo.fr orange.fr gmx.fr
+        sfr.fr neuf.fr free.fr ),
+
+    # German ISP domains
+    qw( gmx.de hotmail.de live.de online.de t-online.de web.de yahoo.de ),
+
+    # Russian ISP domains
+    qw( mail.ru rambler.ru yandex.ru ya.ru list.ru ),
+
+    # Belgian ISP domains
+    qw( hotmail.be live.be skynet.be voo.be tvcablenet.be telenet.be ),
+
+    # Argentinian ISP domains
+    qw( hotmail.com.ar live.com.ar yahoo.com.ar fibertel.com.ar speedy.com.ar
+        arnet.com.ar ),
+
+    # Domains used in Mexico
+    qw( hotmail.com gmail.com yahoo.com.mx live.com.mx yahoo.com hotmail.es
+        live.com hotmail.com.mx prodigy.net.mx msn.com ),
+);
+    
+
 # glob() performs unnecessary lstats for each file in the queue
 # -f and -M and -M for glob() -> up to four stat syscalls per file.
 # this subroutine performs no stats at all.
