@@ -199,7 +199,7 @@ sub analyze_results {
 
     SpamReport::Exim::analyze_queued_mail_data($data);
     SpamReport::Exim::analyze_num_recipients($data);
-    SpamReport::Maillog::analyze_logins($data);
+    #SpamReport::Maillog::analyze_logins($data);
 
     1;
 }
@@ -1447,7 +1447,8 @@ sub parse_exim_mainlog {
             $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$to];
             if ($to =~ /\@(\S+)/ and exists $data_ref->{'domain2user'}{$1}) {
                 my $user = $data_ref->{'domain2user'}{$1};
-                $data_ref->{'responsibility'}{$user}++;
+                $data_ref->{'domain_responsibility'}{$1}++;
+                $data_ref->{'mailbox_responsibility'}{$to}++;
                 $data_ref->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
                 $data_ref->{'who'} = $user;
             }
@@ -1460,7 +1461,11 @@ sub parse_exim_mainlog {
             $line =~ / for (\S+)$/;
             $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$1] if defined $1;
             $data_ref->{'mail_ids'}{$mailid}{'sender'} = $from;
-            if ($from =~ /\S+?@(\S+)/) { $data_ref->{'mail_ids'}{$mailid}{'sender_domain'} = $1 }
+            if ($from =~ /\S+?@(\S+)/) {
+                $data_ref->{'mail_ids'}{$mailid}{'sender_domain'} = $1;
+                $data_ref->{'domain_responsibility'}{$1}++;
+                $data_ref->{'mailbox_responsibility'}{$from}++;
+            }
             $data_ref->{'mail_ids'}{$mailid}{'subject'} = $subject;
             $data_ref->{'mail_ids'}{$mailid}{'auth_sender'} = $1 if $line =~ / A=dovecot_\S+:(\S+)/;
             $data_ref->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
@@ -1650,6 +1655,7 @@ sub savecron {
         $newdata{$_} = $data->{$_}
     }
     store \%newdata, $cronpath;
+    #DumpFile($cronpath, \%newdata);
 }
 
 sub exitsavecron {
@@ -1664,8 +1670,8 @@ sub exitsavecron {
 
 sub retrievecron {
     my ($path) = @_;
-    my $data = retrieve($path);
-    $data
+    retrieve($path);
+    #LoadFile($path)
 }
 
 sub load {
@@ -1886,7 +1892,7 @@ sub check_options {
 
     push @{ $OPTS{'run_sections'} }, 'check_dbs' if $OPTS{'check_dbs'};
     push @{ $OPTS{'run_sections'} }, 'check_queue' if $check_queue || $OPTS{'max_queue'};
-    push @{ $OPTS{'run_sections'} }, ( 'check_emails', 'check_logins' ) unless $check_queue;
+    push @{ $OPTS{'run_sections'} }, 'check_emails' unless $check_queue;  # check_logins
 
     if ( $OPTS{'search_create'} ) {
         @{ $OPTS{'search_create'} } = split /,/, join(',', @{ $OPTS{'search_create'} });
