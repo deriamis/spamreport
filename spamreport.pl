@@ -199,6 +199,7 @@ sub analyze_results {
 
     SpamReport::Exim::analyze_queued_mail_data($data);
     SpamReport::Exim::analyze_num_recipients($data);
+    analyze_mailboxes($data);
     #SpamReport::Maillog::analyze_logins($data);
 
     1;
@@ -214,6 +215,28 @@ sub print_results {
     #print_login_results($data) if exists $data->{'suspects'}{'logins'};
 
     1;
+}
+
+sub analyze_mailboxes {
+    my ($data) = @_;
+    for my $mb (keys %{$data->{'mailbox_responsibility'}}) {
+        next unless $mb =~ /(\S+?)@(\S+)/;
+        my $user = $data->{'domain2user'}{$2};
+        if ($user) {
+            my $dir = "/home/$user/mail/$2/$1";
+            if (-d $dir) {
+                if (-C $dir < 30) {
+                    $data->{'young_mailboxes'}{$dir}++
+                }
+            }
+            else {
+                $data->{'nonexistent_mailboxes'}{$mb}++;
+                $data->{'nonexistent_mailbox_users'}{$user}++;
+            }
+        } else {
+            $data->{'unhosted_domains'}{$mb}++;
+        }
+    }
 }
 
 sub print_responsibility_results {
@@ -1110,6 +1133,23 @@ $VERSION = '2015122201';
 use Time::Local;
 use Regexp::Common qw( SpamReport );
 use File::Nonblock;
+
+sub young_users {
+    my ($data) = @_;
+    my $time = time();
+    for my $user (keys %{$data->{'user2domain'}}) {
+        next if $user eq 'nobody';
+        open my $f, '<', "/var/cpanel/users/$user"
+            or do { warn "Unable to open /var/cpanel/users/$user : $!"; next };
+        while ($_ = <$f>) {
+            if (/^STARTDATE=(\d+)/ && ($time - $1) > (30 * 3600*24)) {
+                $data->{'young_users'}{$user}++;
+                last
+            }
+        }
+        close $f;
+    }
+}
 
 sub map_userdomains {
     my ($userdomains_path) = @_;
@@ -2229,6 +2269,7 @@ sub main {
             next if $section eq 'check_queue';
             $sections{$section}($data);
         }
+        SpamReport::Cpanel::young_users($data);
         SpamReport::Recent::exitsavecron($data);
     }
     elsif ($loadedcron) {
@@ -2241,6 +2282,7 @@ sub main {
         for my $section ( @{ $OPTS{'run_sections'} } ) {
             $sections{$section}($data);
         }
+        SpamReport::Cpanel::young_users($data);
     }
 
     if ( $OPTS{'sections'} ) {
