@@ -1853,7 +1853,7 @@ sub check_options {
         'dbs!'        => \$OPTS{'check_dbs'},
         'read|r=i'    => \$OPTS{'read_lines'},
         'cron'        => \$OPTS{'cron'},
-        'save'        => \$OPTS{'save'},
+        'update'      => \$OPTS{'update'},
         'load=s'      => \$OPTS{'load'},
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
@@ -1899,8 +1899,8 @@ sub check_options {
     if ($OPTS{'latest'} and $OPTS{'load'}) {
         die "only zero or one of --latest and --load can be provided"
     }
-    if (($OPTS{'latest'} or $OPTS{'load'}) and $OPTS{'save'}) {
-        die "--latest/--load is incompatible with --save (we wouldn't have any new data to save)"
+    if (($OPTS{'latest'} or $OPTS{'load'}) and $OPTS{'update'}) {
+        die "--latest/--load is incompatible with --update (we wouldn't have any new data to save)"
     }
     $OPTS{'latest'} = 1 if $OPTS{'user'} and !$OPTS{'load'};
 
@@ -2241,7 +2241,7 @@ sub main {
         SpamReport::Output::email_search_results($data);
     }
     else {
-        SpamReport::Recent::save($data) unless $OPTS{'latest'} or $OPTS{'load'};
+        SpamReport::Recent::save($data) if $OPTS{'update'};
         SpamReport::Output::analyze_results($data);
         if ($OPTS{'user'}) {
             SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
@@ -2287,7 +2287,8 @@ Options:
     -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
 
                 | --cron                : gather crondata and save it, without analysis or output
-                | --latest
+                | --update              : gather fulldata and save it.  uses crondata if fresh
+                | --latest              : use fulldata if present
                 | --load=path/to/file   : load data from file
                 | --loadcron=/to/file   : load crondata from file
                 | --keep=<number>       : preserve # of rotated logs
@@ -2296,4 +2297,16 @@ Options:
                 | --man
                 | --version
 
-NB. when loading saved data, times are not considered.
+crondata: a serialized data structure containing data from calendar days prior
+to today's.
+
+fulldata: a serialized data structure containing all data, including today's.
+
+Usage:
+
+  spamreport              # get a report.  if crondata is fresh, it is used
+  spamreport -u <user>    # get user report.  fulldata is used if present
+  spamreport --cron       # refresh crondata
+  spamreport --update     # get fulldata and save it
+  spamreport --latest     # get a report based on the last-saved fulldata
+
