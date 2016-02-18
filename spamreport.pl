@@ -2424,12 +2424,14 @@ sub main {
     #}
     #else {
     SpamReport::Recent::save($data) if $OPTS{'update'};
-    SpamReport::Output::analyze_results($data);
-    if ($OPTS{'user'}) {
-        SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
-        SpamReport::Output::print_user_results($data, $OPTS{'user'});
-    } else {
-        SpamReport::Output::print_results($data) unless $OPTS{'cron'};
+    if (!$OPTS{'update'}) {
+        SpamReport::Output::analyze_results($data);
+        if ($OPTS{'user'}) {
+            SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
+            SpamReport::Output::print_user_results($data, $OPTS{'user'});
+        } else {
+            SpamReport::Output::print_results($data) unless $OPTS{'cron'};
+        }
     }
     DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
 }
