@@ -200,7 +200,7 @@ sub analyze_results {
     SpamReport::Exim::analyze_queued_mail_data($data);
     SpamReport::Exim::analyze_num_recipients($data);
     analyze_mailboxes($data);
-    #SpamReport::Maillog::analyze_logins($data);
+    SpamReport::Maillog::analyze_logins($data);
 
     1;
 }
@@ -212,7 +212,7 @@ sub print_results {
     print_recipient_results($data) if exists $data->{'suspects'}{'num_recipients'};
     print_script_results($data);
     print_responsibility_results($data) if $data->{'emails'};
-    #print_login_results($data) if exists $data->{'suspects'}{'logins'};
+    print_login_results($data) if exists $data->{'suspects'}{'logins'};
 
     1;
 }
@@ -1708,7 +1708,6 @@ $INC{'SpamReport/Exim/DB.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Recent;
 use common::sense;
-#use YAML::Syck qw(LoadFile DumpFile);
 use Storable;
 use POSIX qw(strftime);
 
@@ -1893,6 +1892,7 @@ use Socket qw(inet_aton inet_ntoa);
 use Sys::Hostname::Long qw(hostname_long);
 
 use Regexp::Common qw/Exim Maillog SpamReport/;
+use YAML::Syck qw(DumpFile);  # only for --dump
 
 use base qw(
     SpamReport::Output
@@ -1949,6 +1949,7 @@ sub check_options {
         'load=s'      => \$OPTS{'load'},
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
+        'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Recent::MAX_RETAINED,
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
@@ -1971,6 +1972,23 @@ sub check_options {
 
     }
 
+    # filesystem security, if we're putting dumps somewhere
+    # 1. ensure that the directory exists (just a way of ensuring that the path is sensible)
+    # 2. ensure that the directory is owned by root
+    # 3. ensure that created files don't have group or other perms
+    #    (and make them non-executable for root as well)
+    for ($OPTS{'dump'}) {
+        my $d;
+        if (-d $_) { $d = $_ }
+        elsif (m,^(/.*)/[^/+]$, && -d $1) { $d = $1 }
+        elsif ($_ !~ m,/,) { $d = '.' }
+        else { die "Directory doesn't exist for --dump target: $_" }
+
+        if (! -o $d) {
+            die "--dump target must be owned by root: $d"
+        }
+    }
+    umask 0177;
 
     $OPTS{'start_time'} = $OPTS{'end_time'} - ($OPTS{'search_hours'} * 3600) if ( ! $OPTS{'start_time'} );
 
@@ -1978,7 +1996,7 @@ sub check_options {
 
     push @{ $OPTS{'run_sections'} }, 'check_dbs' if $OPTS{'check_dbs'};
     push @{ $OPTS{'run_sections'} }, 'check_queue' if $check_queue || $OPTS{'max_queue'};
-    push @{ $OPTS{'run_sections'} }, 'check_emails' unless $check_queue;  # check_logins
+    push @{ $OPTS{'run_sections'} }, 'check_emails', 'check_logins' unless $check_queue;
 
     if ( $OPTS{'search_create'} ) {
         @{ $OPTS{'search_create'} } = split /,/, join(',', @{ $OPTS{'search_create'} });
@@ -2287,6 +2305,7 @@ sub main {
         $data = SpamReport::Recent::loadcron($OPTS{'loadcron'});
         $loadedcron = 1 if $data;
     }
+    DumpFile($OPTS{'dump'}.".cron", $data) if $loadedcron && $OPTS{'dump'};
 
     if ($OPTS{'load'} or $OPTS{'latest'}) {
         $data = SpamReport::Recent::load($OPTS{'load'}) if $OPTS{'load'};
@@ -2330,20 +2349,21 @@ sub main {
         }
         SpamReport::Cpanel::young_users($data);
     }
+    DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
 
-    if ( $OPTS{'sections'} ) {
-        SpamReport::Output::email_search_results($data);
+    #if ( $OPTS{'sections'} ) {
+    #    SpamReport::Output::email_search_results($data);
+    #}
+    #else {
+    SpamReport::Recent::save($data) if $OPTS{'update'};
+    SpamReport::Output::analyze_results($data);
+    if ($OPTS{'user'}) {
+        SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
+        SpamReport::Output::print_user_results($data, $OPTS{'user'});
+    } else {
+        SpamReport::Output::print_results($data) unless $OPTS{'cron'};
     }
-    else {
-        SpamReport::Recent::save($data) if $OPTS{'update'};
-        SpamReport::Output::analyze_results($data);
-        if ($OPTS{'user'}) {
-            SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
-            SpamReport::Output::print_user_results($data, $OPTS{'user'});
-        } else {
-            SpamReport::Output::print_results($data) unless $OPTS{'cron'};
-        }
-    }
+    DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
 }
 
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
@@ -2386,6 +2406,11 @@ Options:
                 | --load=path/to/file   : load data from file
                 | --loadcron=/to/file   : load crondata from file
                 | --keep=<number>       : preserve # of rotated logs
+
+                | --dump=path/to/file   : save (human-readable) YAML files to
+                                          $path.cron  : --cron seeded data, if one was loaded
+                                          $path.scan  : pre-analysis data, after scans are done
+                                          $path.post  : post-analysis data
 
                 | --help
                 | --man
