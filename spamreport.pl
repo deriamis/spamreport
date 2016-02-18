@@ -1773,7 +1773,7 @@ $INC{'SpamReport/Exim/DB.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Recent;
 use common::sense;
-use Storable;
+use Storable qw(lock_store lock_retrieve);
 use POSIX qw(strftime);
 
 use vars qw/$VERSION/;
@@ -1807,7 +1807,7 @@ sub savecron {
     for (keys %$data) {
         $newdata{$_} = $data->{$_}
     }
-    store \%newdata, $cronpath;
+    lock_store \%newdata, $cronpath;
     #DumpFile($cronpath, \%newdata);
 }
 
@@ -1817,13 +1817,13 @@ sub exitsavecron {
         delete $data->{$_} unless exists $cronkeys{$_}
     }
     #DumpFile($cronpath, $data);
-    store $data, $cronpath;
+    lock_store $data, $cronpath;
     exit
 }
 
 sub retrievecron {
     my ($path) = @_;
-    retrieve($path);
+    lock_retrieve($path);
     #LoadFile($path)
 }
 
@@ -1831,14 +1831,14 @@ sub load {
     my ($path) = @_;
     $path = $logpath unless defined $path;
     #LoadFile($path);
-    retrieve($path);
+    lock_retrieve($path);
 }
 
 sub save {
     my ($data) = @_;
     rotate();
     #DumpFile($logpath, $data);
-    store $data, $logpath;
+    lock_store $data, $logpath;
 }
 
 sub rotate {
