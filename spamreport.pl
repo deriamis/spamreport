@@ -211,7 +211,7 @@ sub print_results {
     print_queue_results($data) if exists $data->{'queue_top'};
     print_recipient_results($data) if exists $data->{'suspects'}{'num_recipients'};
     print_script_results($data);
-    print_responsibility_results($data) if $data->{'emails'};
+    print_responsibility_results($data) if $data->{'responsibility'};
     print_login_results($data) if exists $data->{'suspects'}{'logins'};
 
     1;
@@ -239,24 +239,47 @@ sub analyze_mailboxes {
     }
 }
 
+sub widths {
+    my ($h, $total) = (shift, shift);
+    my @width = (0, 0);
+    for (@_) {
+        $width[0] = length($h->{$_}) if $h->{$_} > $width[0];
+        $width[1] = length(sprintf "%.1f", 100*$h->{$_}/$total) if length(sprintf "%.1f", $h->{$_}) > $width[1]
+    }
+    @width
+}
+
+sub percent_report {
+    my ($h, $total, $limit, $title) = @_;
+    return unless $total;
+    my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
+    my @width = (0, 0);
+    for (@list) {
+        $width[0] = length($h->{$_}) if $h->{$_} > $width[0];
+        $width[1] = length(sprintf "%.1f", 100*$h->{$_}/$total) if length(sprintf "%.1f", $h->{$_}) > $width[1]
+    }
+
+    print "\nResponsibility for @{[commify($total)]} $title\n";
+    for (reverse @list) {
+        printf "%$width[0]d %$width[1].1f%% $_\n", $h->{$_}, 100*$h->{$_}/$total
+    }
+}
+
 sub print_responsibility_results {
     my ($data) = @_;
-    my $emails = $data->{'emails'};
-    my %r = %{$data->{'responsibility'}};
+    my ($emails, $bounces) = (0, 0);
+    for (values %{$data->{'mail_ids'}}) {
+        next if $_->{'in_queue'};
+        if ($_->{'type'} eq 'bounce') {
+            $bounces++;
+        } else {
+            $emails++;
+        }
+    }
     my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
-    my @r = sort { $r{$a} <=> $r{$b} } grep { $r{$_} / $emails > $cutoff } keys %r;
-    if (@r < 5) {
-        @r = grep { defined $_ } reverse((sort { $r{$b} <=> $r{$a} } keys %r)[0..4])
-    }
-    my @width = (0, 0);
-    for (@r) {
-        $width[0] = length($r{$_}) if $r{$_} > $width[0];
-        $width[1] = length(sprintf "%.1f", 100*$r{$_}/$emails) if length(sprintf "%.1f", $r{$_}) > $width[1]
-    }
-    print "\nResponsibility for $data->{'emails'} emails:\n";
-    for (reverse @r) {
-        printf "%$width[0]d %$width[1].1f%% $_\n", $r{$_}, 100*$r{$_}/$emails
-    }
+
+    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
+    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
 }
 
 sub print_recipient_results {
@@ -275,23 +298,28 @@ sub print_recipient_results {
     }
 }
 
+sub scriptlimit {
+    my ($h, $total, $per) = @_;
+    my @r = grep { $h->{$_}/$total > $per } keys %$h;
+    map { [$_, $h->{$_}, $total] } sort { $h->{$a} <=> $h->{$b} } grep { defined $_ } @r[0..4]
+}
+
 sub print_script_results {
     my ($data) = @_;
-    my $scripts; $scripts += $data->{'scriptdirs'}{$_} for keys %{$data->{'scriptdirs'}};
-    my @r = sort { $data->{'scriptdirs'}{$a} <=> $data->{'scriptdirs'}{$b} } grep { $data->{'scriptdirs'}{$_}/$scripts > 0.01 } keys %{$data->{'scriptdirs'}};
-    if (@r < 5) {
-        @r = grep { defined $_ } reverse((sort { $data->{'scriptdirs'}{$a} <=> $data->{'scriptdirs'}{$b} } keys %{$data->{'scriptdirs'}})[0..4]);
-    }
+    my $scriptdirs = 0; $scriptdirs += $data->{'scriptdirs'}{$_} for keys %{$data->{'scriptdirs'}};
+    my $script = 0; $script += $data->{'script'}{$_} for keys %{$data->{'script'}};
+    my @r = (scriptlimit($data->{'scriptdirs'}, $scriptdirs, 0.1),
+             scriptlimit($data->{'script'}, $script, 0.1));
     my @width = (0, 0);
     for (@r) {
-        $width[0] = length($data->{'scriptdirs'}{$_}) if length($data->{'scriptdirs'}{$_}) > $width[0];
-        $width[1] = length(sprintf "%.1f", 100*$data->{'scriptdirs'}{$_}/$scripts)
-            if length(sprintf "%.1f", 100*$data->{'scriptdirs'}{$_}/$scripts) > $width[1];
+        my $frac = length(sprintf "%.1f", 100*$_->[1]/$_->[2]);
+        $width[0] = length($_->[1]) if length($_->[1]) > $width[0];
+        $width[1] = $frac if $frac > $width[1]
     }
 
-    print "\nResponsibility for $scripts script working directrories:\n";
+    print "\nResponsibility for @{[commify($scriptdirs)]} script dirs and @{[commify($script)]} scripts\n";
     for (reverse @r) {
-        printf "%$width[0]d %$width[1].1f%% $_\n", $data->{'scriptdirs'}{$_}, 100*$data->{'scriptdirs'}{$_}/$scripts
+        printf "%$width[0]d %$width[1].1f%% $_->[0]\n", $_->[1], 100*$_->[1]/$_->[2]
     }
     #for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
     #    print "$data->{'script'}{$_} $_\n"
@@ -330,13 +358,11 @@ sub print_queue_results {
         push @results, top(fieldcolor($field) => $data->{'queue_top'}{$field})
     }
 
-    my $queue = 0; for (values %{$data->{'mail_ids'}}) { $queue++ if $_->{'in_queue'} }
-
-    print "\nResponsibility for $queue emails in the exim queue:\n";
+    print "\nResponsibility for @{[commify($data->{'total_queue'})]} queued emails (excl. @{[commify($data->{'boxtrapper_queue'})]} boxtrapper; @{[commify($data->{'local_queue'})]} local):\n";
     
     # display results with more related emails than 3% of the number of emails in the queue
     # ... or if this results in no output, display all fields
-    for my $sig (0.03 * $queue, 1) {
+    for my $sig (0.03 * $data->{'total_queue'}, 1) {
         for (reverse sort { $a->[0] <=> $b->[0] } grep { $_->[0] > $sig } @results) {
             $output = 1;
             print "$_->[0] $_->[1]\n"
@@ -1408,7 +1434,6 @@ sub parse_queued_mail_data {
         }; next if $@;
 
         unless (exists $data_ref->{'mail_ids'}{$mail_id}) {
-            $data_ref->{'emails'}++;
             $new_email = 1;
         }
         %{$data_ref->{'mail_ids'}{$mail_id}} = map {
@@ -1459,13 +1484,20 @@ sub parse_queued_mail_data {
             }
             
         } @lines;
-    
+
+        if (exists $data_ref->{'mail_ids'}{$mail_id}{'boxtrapper'}) {
+            # we don't care about boxtrapper emails
+            $data_ref->{'boxtrapper_queue'}++;
+            delete $data_ref->{'mail_ids'}{$mail_id};
+            next;
+        }
+
         my $h_ref = $data_ref->{'mail_ids'}{$mail_id};
         my ($type, $source) = $h_ref->{'sender'} eq 'mailer-daemon'   ? ('bounce', $h_ref->{'helo_name'})
                             : exists $h_ref->{'local'}                ? ('local', $h_ref->{'ident'})
                             : $h_ref->{'host_auth'} =~ m/^dovecot_.*/ ? ('login', $h_ref->{'auth_id'})
                                                                       : ('relay', $h_ref->{'helo_name'});
-    
+
         my $state = $h_ref->{'deliver_firsttime'} ? 'queued'
                   : $h_ref->{'frozen'}            ? 'frozen'
                                                   : 'thawed';
@@ -1476,7 +1508,14 @@ sub parse_queued_mail_data {
         $h_ref->{'location'} = 'queue';
     
         ($h_ref->{'sender_domain'}) = $h_ref->{'sender'} =~ m/@(.*)$/;
-    
+
+        if ($h_ref->{'type'} ne 'bounce' && exists($data_ref->{'domain2user'}{lc($h_ref->{'sender_domain'})})) {
+            # not a bounce and for a local domain?  it may be an issue but we don't care here
+            $data_ref->{'local_queue'}++;
+            delete $data_ref->{'mail_ids'}{$mail_id};
+            next;
+        }
+
         for (@{$h_ref->{'recipients'}}) {
             if ( $_ =~ m/@(.*)$/ ) {
                 $data_ref->{'recipient_domains'}{$1}++;
@@ -1487,7 +1526,7 @@ sub parse_queued_mail_data {
         }
     
         $h_ref->{'who'} = who($data_ref, $h_ref);
-        $data_ref->{'responsibility'}{$h_ref->{'who'}} if $new_email and $h_ref->{'who'} !~ /@/;
+        $data_ref->{'responsibility'}{$h_ref->{'who'}}++ if $new_email and $h_ref->{'who'} !~ /@/;
         $h_ref->{'in_queue'} = 1;
         $data_ref->{'total_queue'}++;
     }
@@ -1524,19 +1563,25 @@ sub parse_exim_mainlog {
             next
         }
         my $mailid = substr($line,20,16);
-        $data_ref->{'emails'}++ unless exists $data_ref->{'mail_ids'}{$mailid};
         
         if (substr($line,37,5) eq '<= <>') {
             $line =~ s/T=".*?(?<!\\)" //;
             next unless $line =~ / for (\S+)$/;
             my $to = $1;
+            $line =~ / S=(\S+)/; for my $script ($1) {
+                if (defined $script && $script !~ /@/ && $script =~ /\D/) {
+                    $data_ref->{'mail_ids'}{$mailid}{'script'} = $script;
+                    $data_ref->{'script'}{$script}++;
+                }
+            }
             $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$to];
             if ($to =~ /\@(\S+)/ and exists $data_ref->{'domain2user'}{$1}) {
                 my $user = $data_ref->{'domain2user'}{$1};
                 $data_ref->{'domain_responsibility'}{$1}++;
                 $data_ref->{'mailbox_responsibility'}{$to}++;
+                $data_ref->{'bounce_responsibility'}{$user}++;
                 $data_ref->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
-                $data_ref->{'who'} = $user;
+                $data_ref->{'mail_ids'}{$mailid}{'who'} = $user;
             }
             $data_ref->{'mail_ids'}{$mailid}{'type'} = 'bounce';
         }
@@ -1544,21 +1589,41 @@ sub parse_exim_mainlog {
             my $subject = $1;
             $line =~ /<= (\S+)/;
             my $from = $1;
-            $line =~ / for (\S+)$/;
-            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$1] if defined $1;
+            $line =~ / for (\S+\@(\S+))$/;
+            my ($to, $to_domain) = ($1, $2);
+            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$to] if defined $to;
             $data_ref->{'mail_ids'}{$mailid}{'sender'} = $from;
-            if ($from =~ /\S+?@(\S+)/) {
-                $data_ref->{'mail_ids'}{$mailid}{'sender_domain'} = $1;
-                $data_ref->{'domain_responsibility'}{$1}++;
-                $data_ref->{'mailbox_responsibility'}{$from}++;
+            my $from_domain;
+            if ($from =~ /\S+?\@(\S+)/) {
+                $from_domain = $1;
+                $data_ref->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
             }
             $data_ref->{'mail_ids'}{$mailid}{'subject'} = $subject;
             $data_ref->{'mail_ids'}{$mailid}{'auth_sender'} = $1 if $line =~ / A=dovecot_\S+:(\S+)/;
             $data_ref->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
             $data_ref->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
             $data_ref->{'mail_ids'}{$mailid}{'who'} = who($data_ref, $data_ref->{'mail_ids'}{$mailid});
-            $data_ref->{'responsibility'}{$data_ref->{'mail_ids'}{$mailid}{'who'}}
-                unless $data_ref->{'mail_ids'}{$mailid}{'who'} =~ /@/;
+
+            if (!exists($data_ref->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
+                && !exists($data_ref->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
+                && !exists($data_ref->{'domain2user'}{lc($from)})  # sender domain is remote
+                && exists($data_ref->{'domain2user'}{lc($to_domain)})) {  # recipient domain is local
+                # then this is an incoming email and we don't care about it
+                delete $data_ref->{'mail_ids'}{$mailid};
+            } elsif (@{$data_ref->{'mail_ids'}{$mailid}{'recipients'}} ==
+                   grep { $_ =~ /\@\Q$data_ref->{'mail_ids'}{$mailid}{'sender_domain'}\E$/i }
+                   @{$data_ref->{'mail_ids'}{$mailid}{'recipients'}}) {
+                # if the number of recipients is the same as the number of
+                # recipients that are to the sender domain, which is local,
+                # then we don't care.  people can spam themselves all they
+                # want.
+                delete $data_ref->{'mail_ids'}{$mailid};
+            } else {
+                $data_ref->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
+                $data_ref->{'mailbox_responsibility'}{lc($from)}++;
+                $data_ref->{'responsibility'}{$data_ref->{'mail_ids'}{$mailid}{'who'}}++
+                    unless $data_ref->{'mail_ids'}{$mailid}{'who'} =~ /@/;
+            }
         }
     }
 }
@@ -1732,7 +1797,10 @@ sub loadcron {
     return;
 }
 
-my %cronkeys = map { ($_, 1) } qw(dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders);
+my %cronkeys = map { ($_, 1) }
+    qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
+        responsibility domain_responsibility bounce_responsibility young_users young_mailboxes
+    );
 sub savecron {
     my ($data) = @_;
     my %newdata;
