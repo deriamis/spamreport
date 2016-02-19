@@ -1569,19 +1569,19 @@ sub parse_exim_mainlog {
         
         if (substr($line,37,5) eq '<= <>') {
             $line =~ s/T=".*?(?<!\\)" //;
-            next unless $line =~ / for (\S+)$/;
-            my $to = $1;
+            next unless $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
+            my @to = split / /, $1;
             $line =~ / S=(\S+)/; for my $script ($1) {
                 if (defined $script && $script !~ /@/ && $script =~ /\D/) {
                     $data_ref->{'mail_ids'}{$mailid}{'script'} = $script;
                     $data_ref->{'script'}{$script}++;
                 }
             }
-            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$to];
-            if ($to =~ /\@(\S+)/ and exists $data_ref->{'domain2user'}{$1}) {
+            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = \@to;
+            if (@to == 1 && $to[0] =~ /\@(\S+)/ and exists $data_ref->{'domain2user'}{$1}) {
                 my $user = $data_ref->{'domain2user'}{$1};
                 $data_ref->{'domain_responsibility'}{$1}++;
-                $data_ref->{'mailbox_responsibility'}{$to}++;
+                $data_ref->{'mailbox_responsibility'}{$to[0]}++;
                 $data_ref->{'bounce_responsibility'}{$user}++;
                 $data_ref->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
                 $data_ref->{'mail_ids'}{$mailid}{'who'} = $user;
@@ -1592,9 +1592,10 @@ sub parse_exim_mainlog {
             my $subject = $1;
             $line =~ /<= (\S+)/;
             my $from = $1;
-            $line =~ / for (\S+\@(\S+))$/;
-            my ($to, $to_domain) = ($1, $2);
-            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = [$to] if defined $to;
+            $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
+            my @to = split / /, $1;
+            my @to_domain = grep { defined $_ } map { /@(.*)/ && $1 } @to;
+            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = \@to if @to;
             $data_ref->{'mail_ids'}{$mailid}{'sender'} = $from;
             my $from_domain;
             if ($from =~ /\S+?\@(\S+)/) {
@@ -1610,7 +1611,7 @@ sub parse_exim_mainlog {
             if (!exists($data_ref->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
                 && !exists($data_ref->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
                 && !exists($data_ref->{'domain2user'}{lc($from)})  # sender domain is remote
-                && exists($data_ref->{'domain2user'}{lc($to_domain)})) {  # recipient domain is local
+                && !grep({ !exists($data_ref->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
                 # then this is an incoming email and we don't care about it
                 delete $data_ref->{'mail_ids'}{$mailid};
             } elsif (@{$data_ref->{'mail_ids'}{$mailid}{'recipients'}} ==
