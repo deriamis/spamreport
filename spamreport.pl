@@ -33,8 +33,8 @@ sub loadcron {
 
 my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
-        responsibility domain_responsibility bounce_responsibility young_users young_mailboxes
-        outip outscript
+        responsibility domain_responsibility bounce_responsibility owner_responsibility
+        young_users young_mailboxes outip outscript
     );
 sub savecron {
     my %newdata;
@@ -1688,8 +1688,14 @@ sub parse_queued_mail_data {
             }
         }
     
-        $h_ref->{'who'} = who($h_ref);
-        $data->{'responsibility'}{$h_ref->{'who'}}++ if $new_email and $h_ref->{'who'} !~ /@/;
+        for (who($h_ref)) {
+            $h_ref->{'who'} = $_;
+            last if /@/ or !$new_email;
+            $data->{'responsibility'}{$_}++;
+            $data->{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
+                if exists $data->{'user2owner'}{$_}
+                && $data->{'user2owner'}{$_} ne 'root'
+        }
         $h_ref->{'in_queue'} = 1;
         $data->{'total_queue'}++;
     }
@@ -1789,8 +1795,13 @@ sub parse_exim_mainlog {
             } else {
                 $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
                 $data->{'mailbox_responsibility'}{lc($from)}++;
-                $data->{'responsibility'}{$data->{'mail_ids'}{$mailid}{'who'}}++
-                    unless $data->{'mail_ids'}{$mailid}{'who'} =~ /@/;
+                for ($data->{'mail_ids'}{$mailid}{'who'}) {
+                    last if /@/;
+                    $data->{'responsibility'}{$_}++;
+                    $data->{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
+                        if exists $data->{'user2owner'}{$_}
+                        && $data->{'user2owner'}{$_} ne 'root'
+                }
             }
         }
     }
