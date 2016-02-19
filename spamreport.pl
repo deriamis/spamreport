@@ -137,6 +137,72 @@ $INC{'Regexp/Common/SpamReport.pm'} = '/dev/null';
 }
 
 BEGIN {
+package SpamReport::ANSIColor;
+use common::sense;
+use Exporter;
+
+our @ISA = 'Exporter';
+our @EXPORT = qw($RED $GREEN $YELLOW $MAGENTA $CYAN $NULL);
+
+our ($RED, $GREEN, $YELLOW, $MAGENTA, $CYAN, $NULL) =
+    map { "\e[${_}m" } (31, 32, 33, "35;1", 36, 0);
+
+sub suppress {
+    $RED = $GREEN = $YELLOW = $MAGENTA = $CYAN = $NULL = ''
+}
+
+1;
+} # end module SpamReport::ANSIColor
+BEGIN {
+$INC{'SpamReport/ANSIColor.pm'} = '/dev/null';
+}
+
+BEGIN {
+package SpamReport::Annotate;
+use common::sense;
+
+use vars qw/$VERSION/;
+$VERSION = '2016021901';
+
+use SpamReport::ANSIColor;
+
+sub script {
+    my ($data, $script) = @_;
+    return $script if -d $script;
+    if (-f $script && ((stat($script))[2])&0777) {
+        $YELLOW . $script . $NULL
+    }
+    elsif (-f $script) {
+        "$RED$script (DISABLED)$NULL"
+    }
+    else {
+        "$RED$script (GONE)$NULL"
+    }
+}
+
+sub user {
+    my ($data, $user) = @_;
+    for (_ticket($user)) {
+        return "$RED$user $_$NULL"
+    }
+    $user
+}
+
+sub _ticket {
+    my $user = shift;
+    open my $f, '<', "/opt/eig_linux/var/suspended/$user" or return;
+    chomp(my $ticket = <$f>);
+    close $f;
+    $ticket ? $ticket : ();
+}
+
+1;
+} # end module SpamReport::Annotate
+BEGIN {
+$INC{'SpamReport/Annotate.pm'} = '/dev/null';
+}
+
+BEGIN {
 package SpamReport::Output;
 
 use common::sense;
@@ -146,6 +212,7 @@ $VERSION = '2015122201';
 
 use Time::Local;
 use List::Util qw(shuffle);
+use SpamReport::ANSIColor;
 
 my @time = CORE::localtime(time);
 my $tz_offset = timegm(@time) - timelocal(@time);
@@ -214,6 +281,7 @@ sub print_results {
     print_responsibility_results($data) if $data->{'responsibility'};
     print_login_results($data) if exists $data->{'suspects'}{'logins'};
 
+    print "\n";
     1;
 }
 
@@ -250,7 +318,7 @@ sub widths {
 }
 
 sub percent_report {
-    my ($h, $total, $limit, $title) = @_;
+    my ($data, $h, $total, $limit, $title) = @_;
     return unless $total;
     my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
     my @width = (0, 0);
@@ -261,7 +329,8 @@ sub percent_report {
 
     print "\nResponsibility for @{[commify($total)]} $title\n";
     for (reverse @list) {
-        printf "%$width[0]d %$width[1].1f%% $_\n", $h->{$_}, 100*$h->{$_}/$total
+        printf "%$width[0]d %$width[1].1f%% %s\n", $h->{$_}, 100*$h->{$_}/$total,
+            SpamReport::Annotate::user($data, $_)
     }
 }
 
@@ -278,8 +347,8 @@ sub print_responsibility_results {
     }
     my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
 
-    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
-    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
+    percent_report($data, $data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
+    percent_report($data, $data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
 }
 
 sub print_recipient_results {
@@ -300,16 +369,28 @@ sub print_recipient_results {
 
 sub scriptlimit {
     my ($h, $total, $per) = @_;
+    return unless $total;
     my @r = grep { $h->{$_}/$total > $per } keys %$h;
     map { [$_, $h->{$_}, $total] } sort { $h->{$a} <=> $h->{$b} } grep { defined $_ } @r[0..4]
 }
 
+sub suppressed_scriptdirs {
+    my ($data, $h) = @_;
+    DIR: for my $dir (keys %{$data->{'scriptdirs'}}) {
+        for (keys %{$data->{'outscript'}}) {
+            next DIR if $_ =~ m,^$dir[^/]+$, && $data->{'outscript'}{$_}/$data->{'scriptdirs'}{$_} > 0.9
+        }
+        $h->{$dir} = $data->{'scriptdirs'}{$dir};
+    }
+}
+
 sub print_script_results {
     my ($data) = @_;
-    my $scriptdirs = 0; $scriptdirs += $data->{'scriptdirs'}{$_} for keys %{$data->{'scriptdirs'}};
-    my $script = 0; $script += $data->{'script'}{$_} for keys %{$data->{'script'}};
-    my @r = (scriptlimit($data->{'scriptdirs'}, $scriptdirs, 0.1),
-             scriptlimit($data->{'script'}, $script, 0.1));
+    my %dirs; suppressed_scriptdirs($data, \%dirs);
+    my $scriptdirs = 0; $scriptdirs += $dirs{$_} for keys %dirs;
+    my $script = 0; $script += $data->{'outscript'}{$_} for keys %{$data->{'outscript'}};
+    my @r = (scriptlimit(\%dirs, $scriptdirs, 0.1),
+             scriptlimit($data->{'outscript'}, $script, 0.1));
     my @width = (0, 0);
     for (@r) {
         my $frac = length(sprintf "%.1f", 100*$_->[1]/$_->[2]);
@@ -319,7 +400,8 @@ sub print_script_results {
 
     print "\nResponsibility for @{[commify($scriptdirs)]} script dirs and @{[commify($script)]} scripts\n";
     for (reverse @r) {
-        printf "%$width[0]d %$width[1].1f%% $_->[0]\n", $_->[1], 100*$_->[1]/$_->[2]
+        printf "%$width[0]d %$width[1].1f%% %s\n", $_->[1], 100*$_->[1]/$_->[2],
+            SpamReport::Annotate::script($data, $_->[0])
     }
     #for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
     #    print "$data->{'script'}{$_} $_\n"
@@ -383,6 +465,8 @@ sub analyze_user_results {
     my %recip;
     my %subject;
 
+    my %dirs; suppressed_scriptdirs($data, \%dirs);
+
     for my $email (values %{$data->{'mail_ids'}}) {
         if ($email->{'type'} eq 'bounce' && exists $email->{'recipient_users'}{$user}) {
             $bounce++;
@@ -409,9 +493,6 @@ sub analyze_user_results {
             if (exists $email->{'host_address'}) {
                 $ips{$email->{'host_address'}}++
             }
-            for (keys %{$email->{'script'}}) {
-                $script{$_}++
-            }
             for (@{$email->{'recipients'}}) {
                 $recip{$_}++
             }
@@ -420,9 +501,13 @@ sub analyze_user_results {
             }
         }
     }
-    for (keys %{$data->{'scriptdirs'}}) {
+    for (keys %dirs) {
         next unless m,^/[^/]+/$user/,;
-        $cwd{$_} += $data->{'scriptdirs'}{$_}
+        $cwd{$_} += $dirs{$_}
+    }
+    for (keys %{$data->{'outscript'}}) {
+        next unless m,^/[^/]+/$user/,;
+        $script{$_} += $data->{'outscript'}{$_}
     }
 
     $data->{'suspects'}{'users'}{$user} = {
@@ -453,8 +538,8 @@ sub commify {
 
 sub sample {
     my ($h, $title) = @_;
-    (join "\n",
-        map { "$_: $h->{$_}" }
+    (join '' => 
+        map { "$_: $h->{$_}\n" }
         grep { defined $_ }
         (sort { $h->{$b} <=> $h->{$a} } keys %$h)[0..14])
     . remainder($h, $title)
@@ -474,7 +559,7 @@ sub remainder {
     my ($h, $title) = @_;
     my $rest = keys(%$h) - 15;
     return if $rest < 1;
-    return "\n\nThere were @{[commify($rest)]} additional $title trimmed."
+    return "\nThere were @{[commify($rest)]} additional $title trimmed.\n"
 }
 
 sub boxtrapper {
@@ -525,15 +610,12 @@ There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addre
 @{[boxtrapper($u, $total)]}Email addresses sent from:
 --------------------------
 @{[sample(\%sent_as, "sender addresses")]}
-
 Logins used to send mail:
 -------------------------
 @{[sample($u->{'sent_accounts'}, "logins")]}
-
 Current working directories:
 ----------------------------
 @{[sample($u->{'cwd'}, "working directories")]}
-
 @{[php_scripts($u)]}Random recipient addresses:
 ---------------------------
 @{[join "\n",
@@ -543,7 +625,6 @@ Current working directories:
 Top recipients:
 ---------------
 @{[sample($u->{'recipients'}, "recipients")]}
-
 Top subjects:
 -------------
 @{[topsubjects($u->{'subject'})]}
@@ -566,32 +647,24 @@ sub top {
 }
 
 {
-    my $colors = !exists($ENV{nocolors}) && -t \*STDOUT;
-    my %color = (
-        green => 32,
-        cyan => 36,
-        red => 31,
-        yellow => 33,
-        magenta => "35;1",
-    );
+    SpamReport::ANSIColor::suppress() if exists($ENV{nocolors}) || !-t\*STDOUT;
 
     my %fieldcolors = (
-        source => $color{yellow},
-        auth_id => $color{red},
-        ident => $color{yellow},
-        auth_sender => $color{red},
-        sender_domain => $color{green},
-        sender => $color{green},
-        recipient_domains => $color{cyan},
-        recipient_users => $color{cyan},
+        source => $YELLOW,
+        auth_id => $RED,
+        ident => $YELLOW,
+        auth_sender => $RED,
+        sender_domain => $GREEN,
+        sender => $GREEN,
+        recipient_domains => $CYAN,
+        recipient_users => $CYAN,
     );
 
     sub fieldcolor {
         my ($field) = @_;
         return $field unless exists $fieldcolors{$field};
-        "\e[$fieldcolors{$field}m$field\e[0m"
+        $fieldcolors{$field} . $field . $NULL
     }
-    sub color { "\e[$_[0]m$_[1]\e[0m" }
 }
 
 1;
@@ -1567,7 +1640,11 @@ sub parse_exim_mainlog {
         }
         my $mailid = substr($line,20,16);
         
-        if (substr($line,37,5) eq '<= <>') {
+        if (substr($line,37,24) eq 'SMTP connection outbound') {
+            next unless $line =~ / F=(.+)/;
+            $data_ref->{'outscript'}{$1}++;
+        }
+        elsif (substr($line,37,5) eq '<= <>') {
             $line =~ s/T=".*?(?<!\\)" //;
             next unless $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
             my @to = split / /, $1;
@@ -1804,6 +1881,7 @@ sub loadcron {
 my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
         responsibility domain_responsibility bounce_responsibility young_users young_mailboxes
+        outip outscript
     );
 sub savecron {
     my ($data) = @_;
