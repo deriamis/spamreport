@@ -1,6 +1,100 @@
 #!/usr/bin/perl
 
 BEGIN {
+package SpamReport::Data;
+use common::sense;
+use Exporter;
+use Storable qw(lock_store lock_retrieve);
+use POSIX qw(strftime);
+
+use vars qw($VERSION $data @ISA @EXPORT);
+$VERSION = '2015122201';
+@ISA = 'Exporter';
+@EXPORT = qw($data);
+$data = {};
+
+my $logpath = "/opt/hgmods/logs/spamreport.dat";
+my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
+
+sub loadcron {
+    my ($path) = @_;
+    return retrievecron($path) if defined $path;
+    return unless -e $cronpath;
+    $path = $cronpath;
+    # if the *calendar date* of $path is the same as today's
+    if (POSIX::strftime("%F", localtime()) eq POSIX::strftime("%F", localtime((stat($path))[9]))) {
+        return retrievecron($path)
+    }
+    else {
+        rotatecron();
+    }
+    return;
+}
+
+my %cronkeys = map { ($_, 1) }
+    qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
+        responsibility domain_responsibility bounce_responsibility young_users young_mailboxes
+        outip outscript
+    );
+sub savecron {
+    my %newdata;
+    for (keys %cronkeys) {
+        $newdata{$_} = $data->{$_}
+    }
+    lock_store \%newdata, $cronpath;
+    #DumpFile($cronpath, \%newdata);
+}
+
+sub exitsavecron {
+    for (keys %$data) {
+        delete $data->{$_} unless exists $cronkeys{$_}
+    }
+    #DumpFile($cronpath, $data);
+    lock_store $data, $cronpath;
+    exit
+}
+
+sub retrievecron {
+    my ($path) = @_;
+    $data = lock_retrieve($path);
+    #$data = LoadFile($path)
+}
+
+sub load {
+    my ($path) = @_;
+    $path = $logpath unless defined $path;
+    #$data = LoadFile($path);
+    $data = lock_retrieve($path);
+}
+
+sub save {
+    rotate();
+    #DumpFile($logpath, $data);
+    lock_store $data, $logpath;
+}
+
+sub rotate {
+    my ($path) = @_;
+    $path = $logpath unless defined $path;
+    my @logs = sort { -M $a <=> -M $b } glob "$path*";
+    unlink for @logs[$data->{'OPTS'}{'MAX_RETAINED'}..$#logs];
+    for (sort { -M $b <=> -M $a } @logs) {
+        next unless /.(\d+)$/;
+        my ($this, $next) = ($1, $1 + 1);
+        rename "$path.$this", "$path.$next";
+    }
+    rename $path, "$path.1";
+}
+
+sub rotatecron { rotate($cronpath) }
+
+1;
+} # end module SpamReport::Data
+BEGIN {
+$INC{'SpamReport/Data.pm'} = '/dev/null';
+}
+
+BEGIN {
 package Regexp::Common::Exim;
 
 use strict;
@@ -141,8 +235,9 @@ package SpamReport::ANSIColor;
 use common::sense;
 use Exporter;
 
-our @ISA = 'Exporter';
-our @EXPORT = qw($RED $GREEN $YELLOW $MAGENTA $CYAN $NULL);
+use vars qw(@ISA @EXPORT);
+@ISA = 'Exporter';
+@EXPORT = qw($RED $GREEN $YELLOW $MAGENTA $CYAN $NULL);
 
 our ($RED, $GREEN, $YELLOW, $MAGENTA, $CYAN, $NULL) =
     map { "\e[${_}m" } (31, 32, 33, "35;1", 36, 0);
@@ -160,6 +255,7 @@ $INC{'SpamReport/ANSIColor.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Annotate;
 use common::sense;
+use SpamReport::Data;
 
 use vars qw/$VERSION/;
 $VERSION = '2016021901';
@@ -167,7 +263,7 @@ $VERSION = '2016021901';
 use SpamReport::ANSIColor;
 
 sub script {
-    my ($data, $script) = @_;
+    my ($script) = @_;
     return $script if -d $script;
     if (-f $script && ((stat($script))[2])&0777) {
         $YELLOW . $script . $NULL
@@ -181,7 +277,7 @@ sub script {
 }
 
 sub user {
-    my ($data, $user) = @_;
+    my ($user) = @_;
     for (_ticket($user)) {
         return "$RED$user $_$NULL"
     }
@@ -206,6 +302,7 @@ BEGIN {
 package SpamReport::Output;
 
 use common::sense;
+use SpamReport::Data;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
@@ -242,8 +339,6 @@ END_INFO
 }
 
 sub email_search_results {
-    my ($data) = @_;
-
     if ( exists $data->{'logins'} and scalar keys %{ $data->{'logins'} } > 0 ) {
         print "\nFound creation time(s) for:\n";
         print join "\n    ", keys %{ $data->{'logins'} };
@@ -262,31 +357,26 @@ sub email_search_results {
 }
 
 sub analyze_results {
-    my ($data) = @_;
-
-    SpamReport::Exim::analyze_queued_mail_data($data);
-    SpamReport::Exim::analyze_num_recipients($data);
-    analyze_mailboxes($data);
-    SpamReport::Maillog::analyze_logins($data);
+    SpamReport::Exim::analyze_queued_mail_data();
+    SpamReport::Exim::analyze_num_recipients();
+    analyze_mailboxes();
+    SpamReport::Maillog::analyze_logins();
 
     1;
 }
 
 sub print_results {
-    my ($data) = @_;
-
-    print_queue_results($data) if exists $data->{'queue_top'};
-    print_recipient_results($data) if exists $data->{'suspects'}{'num_recipients'};
-    print_script_results($data);
-    print_responsibility_results($data) if $data->{'responsibility'};
-    print_login_results($data) if exists $data->{'suspects'}{'logins'};
+    print_queue_results() if exists $data->{'queue_top'};
+    print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
+    print_script_results();
+    print_responsibility_results() if $data->{'responsibility'};
+    print_login_results() if exists $data->{'suspects'}{'logins'};
 
     print "\n";
     1;
 }
 
 sub analyze_mailboxes {
-    my ($data) = @_;
     for my $mb (keys %{$data->{'mailbox_responsibility'}}) {
         next unless $mb =~ /(\S+?)@(\S+)/;
         my $user = $data->{'domain2user'}{$2};
@@ -318,7 +408,7 @@ sub widths {
 }
 
 sub percent_report {
-    my ($data, $h, $total, $limit, $title) = @_;
+    my ($h, $total, $limit, $title) = @_;
     return unless $total;
     my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
     my @width = (0, 0);
@@ -330,12 +420,11 @@ sub percent_report {
     print "\nResponsibility for @{[commify($total)]} $title\n";
     for (reverse @list) {
         printf "%$width[0]d %$width[1].1f%% %s\n", $h->{$_}, 100*$h->{$_}/$total,
-            SpamReport::Annotate::user($data, $_)
+            SpamReport::Annotate::user($_)
     }
 }
 
 sub print_responsibility_results {
-    my ($data) = @_;
     my ($emails, $bounces) = (0, 0);
     for (values %{$data->{'mail_ids'}}) {
         next if $_->{'in_queue'};
@@ -347,12 +436,11 @@ sub print_responsibility_results {
     }
     my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
 
-    percent_report($data, $data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
-    percent_report($data, $data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
+    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
+    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
 }
 
 sub print_recipient_results {
-    my ($data) = @_;
     my @widths = (0, 0);
     for (values %{$data->{'suspects'}{'num_recipients'}}) {
         my ($em, $ad) = (length($_->{'emails'}), length($_->{'addresses'}));
@@ -375,7 +463,7 @@ sub scriptlimit {
 }
 
 sub suppressed_scriptdirs {
-    my ($data, $h) = @_;
+    my ($h) = @_;
     DIR: for my $dir (keys %{$data->{'scriptdirs'}}) {
         for (keys %{$data->{'outscript'}}) {
             next DIR if $_ =~ m,^$dir[^/]+$, && $data->{'outscript'}{$_}/$data->{'scriptdirs'}{$_} > 0.9
@@ -385,8 +473,7 @@ sub suppressed_scriptdirs {
 }
 
 sub print_script_results {
-    my ($data) = @_;
-    my %dirs; suppressed_scriptdirs($data, \%dirs);
+    my %dirs; suppressed_scriptdirs(\%dirs);
     my $scriptdirs = 0; $scriptdirs += $dirs{$_} for keys %dirs;
     my $script = 0; $script += $data->{'outscript'}{$_} for keys %{$data->{'outscript'}};
     my @r = (scriptlimit(\%dirs, $scriptdirs, 0.1),
@@ -401,7 +488,7 @@ sub print_script_results {
     print "\nResponsibility for @{[commify($scriptdirs)]} script dirs and @{[commify($script)]} scripts\n";
     for (reverse @r) {
         printf "%$width[0]d %$width[1].1f%% %s\n", $_->[1], 100*$_->[1]/$_->[2],
-            SpamReport::Annotate::script($data, $_->[0])
+            SpamReport::Annotate::script($_->[0])
     }
     #for (sort { $data->{'script'}{$a} <=> $data->{'script'}{$b} } keys %{$data->{'script'}}) {
     #    print "$data->{'script'}{$_} $_\n"
@@ -412,7 +499,6 @@ sub print_script_results {
 }
 
 sub print_login_results {
-    my ($data) = @_;
     my @width = (0, 0);
     my %h = %{$data->{'suspects'}{'logins'}};
     for (values %h) {
@@ -432,7 +518,6 @@ sub print_login_results {
 }
 
 sub print_queue_results {
-    my ($data) = @_;
     my @results;
     my $output;
 
@@ -454,7 +539,7 @@ sub print_queue_results {
 }
 
 sub analyze_user_results {
-    my ($data, $user) = @_;
+    my ($user) = @_;
     my ($sent, $bounce, $queued, $boxtrapper) = (0, 0, 0);
     my %sent;
     my %bounce;
@@ -465,7 +550,7 @@ sub analyze_user_results {
     my %recip;
     my %subject;
 
-    my %dirs; suppressed_scriptdirs($data, \%dirs);
+    my %dirs; suppressed_scriptdirs(\%dirs);
 
     for my $email (values %{$data->{'mail_ids'}}) {
         if ($email->{'type'} eq 'bounce' && exists $email->{'recipient_users'}{$user}) {
@@ -582,7 +667,7 @@ BOX
 }
 
 sub print_user_results {
-    my ($data, $user) = @_;
+    my ($user) = @_;
     my $u = $data->{'suspects'}{'users'}{$user}
         or die "No information about $user";
 
@@ -1232,9 +1317,9 @@ $VERSION = '2015122201';
 use Time::Local;
 use Regexp::Common qw( SpamReport );
 use File::Nonblock;
+use SpamReport::Data;
 
 sub young_users {
-    my ($data) = @_;
     my $time = time();
     for my $user (keys %{$data->{'user2domain'}}) {
         next if $user eq 'nobody';
@@ -1327,7 +1412,7 @@ sub map_valiases {
 }
 
 sub find_email_creation {
-    my ($lines, $end_time, $data_ref, @search_list) = @_;
+    my ($lines, $end_time, @search_list) = @_;
     for my $line ( @{ $lines } ) {
             
         if ( $line =~ m/$RE{'cpanel'}{'addpop'}/ ) {
@@ -1347,9 +1432,9 @@ sub find_email_creation {
 
             last if ( $timestamp > $end_time );
 
-            $data_ref->{'logins'}{$login}{'created_from'} = $ipaddr;
-            $data_ref->{'logins'}{$login}{'created_by'} = $username;
-            $data_ref->{'logins'}{$login}{'created_on'} = $timestamp;
+            $data->{'logins'}{$login}{'created_from'} = $ipaddr;
+            $data->{'logins'}{$login}{'created_by'} = $username;
+            $data->{'logins'}{$login}{'created_on'} = $timestamp;
         }
 
     }
@@ -1403,6 +1488,7 @@ $INC{'SpamReport/Cpanel.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Exim;
 use common::sense;
+use SpamReport::Data;
 
 use vars qw/$VERSION/;
 $VERSION = '2015122201';
@@ -1487,7 +1573,7 @@ sub email_header_files {
 }
 
 sub parse_queued_mail_data {
-    my ($start_time, $end_time, $max_queue, $data_ref) = @_;
+    my ($start_time, $end_time, $max_queue) = @_;
 
     my @new_mail = email_header_files($max_queue);
     for my $i (0..$#new_mail) {
@@ -1509,10 +1595,10 @@ sub parse_queued_mail_data {
                 close $fh;
         }; next if $@;
 
-        unless (exists $data_ref->{'mail_ids'}{$mail_id}) {
+        unless (exists $data->{'mail_ids'}{$mail_id}) {
             $new_email = 1;
         }
-        %{$data_ref->{'mail_ids'}{$mail_id}} = map {
+        %{$data->{'mail_ids'}{$mail_id}} = map {
             chomp;
             $line_no++;
     
@@ -1561,14 +1647,14 @@ sub parse_queued_mail_data {
             
         } @lines;
 
-        if (exists $data_ref->{'mail_ids'}{$mail_id}{'boxtrapper'}) {
+        if (exists $data->{'mail_ids'}{$mail_id}{'boxtrapper'}) {
             # we don't care about boxtrapper emails
-            $data_ref->{'boxtrapper_queue'}++;
-            delete $data_ref->{'mail_ids'}{$mail_id};
+            $data->{'boxtrapper_queue'}++;
+            delete $data->{'mail_ids'}{$mail_id};
             next;
         }
 
-        my $h_ref = $data_ref->{'mail_ids'}{$mail_id};
+        my $h_ref = $data->{'mail_ids'}{$mail_id};
         my ($type, $source) = $h_ref->{'sender'} eq 'mailer-daemon'   ? ('bounce', $h_ref->{'helo_name'})
                             : exists $h_ref->{'local'}                ? ('local', $h_ref->{'ident'})
                             : $h_ref->{'host_auth'} =~ m/^dovecot_.*/ ? ('login', $h_ref->{'auth_id'})
@@ -1585,38 +1671,38 @@ sub parse_queued_mail_data {
     
         ($h_ref->{'sender_domain'}) = $h_ref->{'sender'} =~ m/@(.*)$/;
 
-        if ($h_ref->{'type'} ne 'bounce' && exists($data_ref->{'domain2user'}{lc($h_ref->{'sender_domain'})})) {
+        if ($h_ref->{'type'} ne 'bounce' && exists($data->{'domain2user'}{lc($h_ref->{'sender_domain'})})) {
             # not a bounce and for a local domain?  it may be an issue but we don't care here
-            $data_ref->{'local_queue'}++;
-            delete $data_ref->{'mail_ids'}{$mail_id};
+            $data->{'local_queue'}++;
+            delete $data->{'mail_ids'}{$mail_id};
             next;
         }
 
         for (@{$h_ref->{'recipients'}}) {
             if ( $_ =~ m/@(.*)$/ ) {
-                $data_ref->{'recipient_domains'}{$1}++;
-                if (exists $data_ref->{'domain2user'}{$1}) {
-                    $h_ref->{'recipient_users'}{$data_ref->{'domain2user'}{$1}}++
+                $data->{'recipient_domains'}{$1}++;
+                if (exists $data->{'domain2user'}{$1}) {
+                    $h_ref->{'recipient_users'}{$data->{'domain2user'}{$1}}++
                 }
             }
         }
     
-        $h_ref->{'who'} = who($data_ref, $h_ref);
-        $data_ref->{'responsibility'}{$h_ref->{'who'}}++ if $new_email and $h_ref->{'who'} !~ /@/;
+        $h_ref->{'who'} = who($h_ref);
+        $data->{'responsibility'}{$h_ref->{'who'}}++ if $new_email and $h_ref->{'who'} !~ /@/;
         $h_ref->{'in_queue'} = 1;
-        $data_ref->{'total_queue'}++;
+        $data->{'total_queue'}++;
     }
 }
 
 sub parse_exim_mainlog {
-    my ($lines, $year, $end_time, $data_ref, $in_zone) = @_;
+    my ($lines, $year, $end_time, $in_zone) = @_;
     my @lines = @$lines;
-    my %days = %{$data_ref->{'OPTS'}{'exim_days'}};
-    if ($data_ref->{'OPTS'}{'datelimit'} eq 'not today') {
-        delete $days{$data_ref->{'OPTS'}{'exim_today'}};
+    my %days = %{$data->{'OPTS'}{'exim_days'}};
+    if ($data->{'OPTS'}{'datelimit'} eq 'not today') {
+        delete $days{$data->{'OPTS'}{'exim_today'}};
     }
-    elsif ($data_ref->{'OPTS'}{'datelimit'} eq 'only today') {
-        %days = ($data_ref->{'OPTS'}{'exim_today'} => 1);
+    elsif ($data->{'OPTS'}{'datelimit'} eq 'only today') {
+        %days = ($data->{'OPTS'}{'exim_today'} => 1);
     }
 
     unless ($in_zone->[0]) {
@@ -1635,14 +1721,14 @@ sub parse_exim_mainlog {
         }
 
         if ( substr($line,20,4) eq 'cwd=' && $line =~ $RE{'exim'}{'info'}{'script'} ) {
-            $data_ref->{'scriptdirs'}{$1}++;
+            $data->{'scriptdirs'}{$1}++;
             next
         }
         my $mailid = substr($line,20,16);
         
         if (substr($line,37,24) eq 'SMTP connection outbound') {
             next unless $line =~ / F=(.+)/;
-            $data_ref->{'outscript'}{$1}++;
+            $data->{'outscript'}{$1}++;
         }
         elsif (substr($line,37,5) eq '<= <>') {
             $line =~ s/T=".*?(?<!\\)" //;
@@ -1650,20 +1736,20 @@ sub parse_exim_mainlog {
             my @to = split / /, $1;
             $line =~ / S=(\S+)/; for my $script ($1) {
                 if (defined $script && $script !~ /@/ && $script =~ /\D/) {
-                    $data_ref->{'mail_ids'}{$mailid}{'script'} = $script;
-                    $data_ref->{'script'}{$script}++;
+                    $data->{'mail_ids'}{$mailid}{'script'} = $script;
+                    $data->{'script'}{$script}++;
                 }
             }
-            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = \@to;
-            if (@to == 1 && $to[0] =~ /\@(\S+)/ and exists $data_ref->{'domain2user'}{$1}) {
-                my $user = $data_ref->{'domain2user'}{$1};
-                $data_ref->{'domain_responsibility'}{$1}++;
-                $data_ref->{'mailbox_responsibility'}{$to[0]}++;
-                $data_ref->{'bounce_responsibility'}{$user}++;
-                $data_ref->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
-                $data_ref->{'mail_ids'}{$mailid}{'who'} = $user;
+            $data->{'mail_ids'}{$mailid}{'recipients'} = \@to;
+            if (@to == 1 && $to[0] =~ /\@(\S+)/ and exists $data->{'domain2user'}{$1}) {
+                my $user = $data->{'domain2user'}{$1};
+                $data->{'domain_responsibility'}{$1}++;
+                $data->{'mailbox_responsibility'}{$to[0]}++;
+                $data->{'bounce_responsibility'}{$user}++;
+                $data->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
+                $data->{'mail_ids'}{$mailid}{'who'} = $user;
             }
-            $data_ref->{'mail_ids'}{$mailid}{'type'} = 'bounce';
+            $data->{'mail_ids'}{$mailid}{'type'} = 'bounce';
         }
         elsif (substr($line,37,2) eq '<=' && $line =~ s/T="(.*?)(?<!\\)" //) {
             my $subject = $1;
@@ -1672,46 +1758,44 @@ sub parse_exim_mainlog {
             $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
             my @to = split / /, $1;
             my @to_domain = grep { defined $_ } map { /@(.*)/ && $1 } @to;
-            $data_ref->{'mail_ids'}{$mailid}{'recipients'} = \@to if @to;
-            $data_ref->{'mail_ids'}{$mailid}{'sender'} = $from;
+            $data->{'mail_ids'}{$mailid}{'recipients'} = \@to if @to;
+            $data->{'mail_ids'}{$mailid}{'sender'} = $from;
             my $from_domain;
             if ($from =~ /\S+?\@(\S+)/) {
                 $from_domain = $1;
-                $data_ref->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
+                $data->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
             }
-            $data_ref->{'mail_ids'}{$mailid}{'subject'} = $subject;
-            $data_ref->{'mail_ids'}{$mailid}{'auth_sender'} = $1 if $line =~ / A=dovecot_\S+:(\S+)/;
-            $data_ref->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
-            $data_ref->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
-            $data_ref->{'mail_ids'}{$mailid}{'who'} = who($data_ref, $data_ref->{'mail_ids'}{$mailid});
+            $data->{'mail_ids'}{$mailid}{'subject'} = $subject;
+            $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1 if $line =~ / A=dovecot_\S+:(\S+)/;
+            $data->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
+            $data->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
+            $data->{'mail_ids'}{$mailid}{'who'} = who($data->{'mail_ids'}{$mailid});
 
-            if (!exists($data_ref->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
-                && !exists($data_ref->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
-                && !exists($data_ref->{'domain2user'}{lc($from)})  # sender domain is remote
-                && !grep({ !exists($data_ref->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
+            if (!exists($data->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
+                && !exists($data->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
+                && !exists($data->{'domain2user'}{lc($from)})  # sender domain is remote
+                && !grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
                 # then this is an incoming email and we don't care about it
-                delete $data_ref->{'mail_ids'}{$mailid};
-            } elsif (@{$data_ref->{'mail_ids'}{$mailid}{'recipients'}} ==
-                   grep { $_ =~ /\@\Q$data_ref->{'mail_ids'}{$mailid}{'sender_domain'}\E$/i }
-                   @{$data_ref->{'mail_ids'}{$mailid}{'recipients'}}) {
+                delete $data->{'mail_ids'}{$mailid};
+            } elsif (@{$data->{'mail_ids'}{$mailid}{'recipients'}} ==
+                   grep { $_ =~ /\@\Q$data->{'mail_ids'}{$mailid}{'sender_domain'}\E$/i }
+                   @{$data->{'mail_ids'}{$mailid}{'recipients'}}) {
                 # if the number of recipients is the same as the number of
                 # recipients that are to the sender domain, which is local,
                 # then we don't care.  people can spam themselves all they
                 # want.
-                delete $data_ref->{'mail_ids'}{$mailid};
+                delete $data->{'mail_ids'}{$mailid};
             } else {
-                $data_ref->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
-                $data_ref->{'mailbox_responsibility'}{lc($from)}++;
-                $data_ref->{'responsibility'}{$data_ref->{'mail_ids'}{$mailid}{'who'}}++
-                    unless $data_ref->{'mail_ids'}{$mailid}{'who'} =~ /@/;
+                $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
+                $data->{'mailbox_responsibility'}{lc($from)}++;
+                $data->{'responsibility'}{$data->{'mail_ids'}{$mailid}{'who'}}++
+                    unless $data->{'mail_ids'}{$mailid}{'who'} =~ /@/;
             }
         }
     }
 }
 
 sub analyze_queued_mail_data {
-    my ($data) = @_;
-
     for my $email (values %{$data->{'mail_ids'}}) {
         next unless $email->{'in_queue'};
         $data->{'script'}{$email->{'script'}}++ if exists $email->{'script'};
@@ -1729,7 +1813,7 @@ sub analyze_queued_mail_data {
 }
 
 sub who {
-    my ($data, $email) = @_;
+    my ($email) = @_;
     my $who = '(unknown)';
     for (qw(ident auth_id auth_sender source sender)) {
         if (exists $email->{$_}) {
@@ -1748,7 +1832,6 @@ sub who {
 # sending 200 emails each to 2 of 201 total addresses = OK (self CC)
 # implemented: SUSP.NR1 suspect if total addresses / emails >= 1.20
 sub analyze_num_recipients {
-    my ($data) = @_;
     my %suspects;
     my %emails;
 
@@ -1780,6 +1863,7 @@ $INC{'SpamReport/Exim.pm'} = '/dev/null';
 
 BEGIN {
 package SpamReport::Exim::DB;
+use SpamReport::Data;
 
 use strict;
 use warnings;
@@ -1819,7 +1903,7 @@ sub open {
 }
 
 sub read {
-    my ($db_name, $sub_ref, $data_ref) = @_;
+    my ($db_name, $sub_ref) = @_;
 
     die "Attempted to read non-opened database $db_name" if not exists $open_dbs->{$db_name};
     die "Undefined reference to parser subroutine" if (not defined $sub_ref or ref $sub_ref ne 'CODE');
@@ -1827,7 +1911,7 @@ sub read {
     while ( my ($key, $value) = each %{$open_dbs->{$db_name}{'tie_hash'}} ) {
         $key =~ s/\x00$//;
 
-        &{$sub_ref}($key, $value, $data_ref);
+        &{$sub_ref}($key, $value);
     }
 
     1;
@@ -1852,100 +1936,8 @@ $INC{'SpamReport/Exim/DB.pm'} = '/dev/null';
 }
 
 BEGIN {
-package SpamReport::Recent;
-use common::sense;
-use Storable qw(lock_store lock_retrieve);
-use POSIX qw(strftime);
-
-use vars qw/$VERSION/;
-$VERSION = '2015122201';
-my $logpath = "/opt/hgmods/logs/spamreport.dat";
-my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
-our $MAX_RETAINED = 4;
-
-sub loadcron {
-    my ($path) = @_;
-    return retrievecron($path) if defined $path;
-    return unless -e $cronpath;
-    $path = $cronpath;
-    # if the *calendar date* of $path is the same as today's
-    if (POSIX::strftime("%F", localtime()) eq POSIX::strftime("%F", localtime((stat($path))[9]))) {
-        return retrievecron($path)
-    }
-    else {
-        rotatecron();
-    }
-    return;
-}
-
-my %cronkeys = map { ($_, 1) }
-    qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
-        responsibility domain_responsibility bounce_responsibility young_users young_mailboxes
-        outip outscript
-    );
-sub savecron {
-    my ($data) = @_;
-    my %newdata;
-    for (keys %$data) {
-        $newdata{$_} = $data->{$_}
-    }
-    lock_store \%newdata, $cronpath;
-    #DumpFile($cronpath, \%newdata);
-}
-
-sub exitsavecron {
-    my ($data) = @_;
-    for (keys %$data) {
-        delete $data->{$_} unless exists $cronkeys{$_}
-    }
-    #DumpFile($cronpath, $data);
-    lock_store $data, $cronpath;
-    exit
-}
-
-sub retrievecron {
-    my ($path) = @_;
-    lock_retrieve($path);
-    #LoadFile($path)
-}
-
-sub load {
-    my ($path) = @_;
-    $path = $logpath unless defined $path;
-    #LoadFile($path);
-    lock_retrieve($path);
-}
-
-sub save {
-    my ($data) = @_;
-    rotate();
-    #DumpFile($logpath, $data);
-    lock_store $data, $logpath;
-}
-
-sub rotate {
-    my ($path) = @_;
-    $path = $logpath unless defined $path;
-    my @logs = sort { -M $a <=> -M $b } glob "$path*";
-    unlink for @logs[$MAX_RETAINED..$#logs];
-    for (sort { -M $b <=> -M $a } @logs) {
-        next unless /.(\d+)$/;
-        my ($this, $next) = ($1, $1 + 1);
-        rename "$path.$this", "$path.$next";
-    }
-    rename $path, "$path.1";
-}
-
-sub rotatecron { rotate($cronpath) }
-
-1;
-} # end module SpamReport::Recent
-BEGIN {
-$INC{'SpamReport/Recent.pm'} = '/dev/null';
-}
-
-BEGIN {
 package SpamReport::Maillog;
+use SpamReport::Data;
 
 use common::sense;
 
@@ -1966,14 +1958,14 @@ my @months = qw[Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec];
 my %month_to_ord = map {$months[$_] => $_} (0 .. $#months);
 
 sub find_dovecot_logins {
-    my ($lines, $year, $end_time, $data_ref, $in_zone) = @_;
+    my ($lines, $year, $end_time, $in_zone) = @_;
     my @lines = @$lines;
-    my %days = %{$data_ref->{'OPTS'}{'dovecot_days'}};
-    if ($data_ref->{'OPTS'}{'datelimit'} eq 'not today') {
-        delete $days{$data_ref->{'OPTS'}{'dovecot_today'}};
+    my %days = %{$data->{'OPTS'}{'dovecot_days'}};
+    if ($data->{'OPTS'}{'datelimit'} eq 'not today') {
+        delete $days{$data->{'OPTS'}{'dovecot_today'}};
     }
-    elsif ($data_ref->{'OPTS'}{'datelimit'} eq 'only today') {
-        %days = ($data_ref->{'OPTS'}{'dovecot_today'} => 1);
+    elsif ($data->{'OPTS'}{'datelimit'} eq 'only today') {
+        %days = ($data->{'OPTS'}{'dovecot_today'} => 1);
     }
     
     unless ($in_zone->[0]) {
@@ -1990,12 +1982,12 @@ sub find_dovecot_logins {
             $in_zone->[0] = 0;
             return
         }
-        next unless $_ =~ $data_ref->{'OPTS'}{'dovecot_days'};
+        next unless $_ =~ $data->{'OPTS'}{'dovecot_days'};
         if ( /Login: user=<(?!__cpanel)(\S+?)>/ ) {
             my $login = $1;
-            $data_ref->{'logins'}{$login}{'total_logins'}++;
+            $data->{'logins'}{$login}{'total_logins'}++;
             if ( /rip=(?!127\.0\.0\.1)(?!$main_ip)(\S+?),/ ) {
-                $data_ref->{'logins'}{$login}{'logins_from'}{$1}++
+                $data->{'logins'}{$login}{'logins_from'}{$1}++
             }
         }
     }
@@ -2003,8 +1995,6 @@ sub find_dovecot_logins {
 
 # implemented: SUSP.LOG1 account suspect if login IPs have >5 unique leading 2 octets
 sub analyze_logins {
-    my ($data) = @_;
-
     for my $login (keys %{$data->{'logins'}}) {
         my %prefix = map { /^(\d+\.\d+\.)/ or die $_; ($1, 1) } keys %{$data->{'logins'}{$login}{'logins_from'}};
         next unless scalar(keys %prefix) > 5;
@@ -2020,6 +2010,7 @@ $INC{'SpamReport/Maillog.pm'} = '/dev/null';
 
 { # begin main package
 package SpamReport;
+use SpamReport::Data;
 
 use common::sense;
 use 5.008_008; use v5.8.8;
@@ -2072,6 +2063,7 @@ my %OPTS = (
     'run_sections'  => undef,
     'read_lines'    => 10000,
     'r_cutoff'      => 1.0,
+    'keep'          => 4,
 );
 
 my $hostname = hostname_long();
@@ -2100,7 +2092,7 @@ sub check_options {
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
         'dump=s'      => \$OPTS{'dump'},
-        'keep=i'      => \$SpamReport::Recent::MAX_RETAINED,
+        'keep=i'      => \$OPTS{'keep'},
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
@@ -2193,7 +2185,7 @@ sub check_options {
 
 sub parse_retries {
 
-    my ($key, $value, $data_ref) = @_;
+    my ($key, $value) = @_;
 
     # typedef struct {
     #   time_t time_stamp;
@@ -2215,7 +2207,7 @@ sub parse_retries {
         if ( not $expired and ($last_try >= $OPTS{'start_time'}) and ($last_try < $OPTS{'end_time'}) ) {
             $log_data =~ s/<|>//g;
             my ($mail_username, $mail_hostname) = split /@/, $log_data;
-            $data_ref->{'senders'}{$mail_username}{'retries'}++ if ( $mail_hostname eq $hostname );
+            $data->{'senders'}{$mail_username}{'retries'}++ if ( $mail_hostname eq $hostname );
         }
     }
 
@@ -2224,7 +2216,7 @@ sub parse_retries {
 
 sub parse_ratelimit {
 
-    my ($key, $value, $data_ref) = @_;
+    my ($key, $value) = @_;
 
     # typedef struct {
     #   time_t time_stamp;
@@ -2236,7 +2228,7 @@ sub parse_ratelimit {
     my (undef, $unit, $conn_ip) = split /\//, $key;
 
     my ($time_stamp, $time_usec, $rate) = unpack ('l x4 i x4 d', $value);
-    $data_ref->{'ip_addresses'}{$conn_ip}{'conn_rate'} = $rate
+    $data->{'ip_addresses'}{$conn_ip}{'conn_rate'} = $rate
         if ($time_stamp >= $OPTS{'start_time'} and $time_stamp < $OPTS{'end_time'} );
 
     1;
@@ -2245,7 +2237,7 @@ sub parse_ratelimit {
 
 sub parse_wait {
  
-    my ($key, $value, $data_ref) = @_;
+    my ($key, $value) = @_;
 
     # typedef struct {
     #   time_t time_stamp;
@@ -2261,8 +2253,8 @@ sub parse_wait {
     my @mail_ids = unpack ("x[l] x4 x[i] x[i] (A16)$count", $value);
 
     if ($host =~ m/$RE{'spam'}{'hi_destination'}/i) {
-        $data_ref->{'mail_ids'}{$_}{'send_delays'}++ for (@mail_ids);
-        $data_ref->{'dest_domains'}{$1}{'delays'}++ for (@mail_ids);
+        $data->{'mail_ids'}{$_}{'send_delays'}++ for (@mail_ids);
+        $data->{'dest_domains'}{$1}{'delays'}++ for (@mail_ids);
     }
 
     1;
@@ -2323,8 +2315,6 @@ sub get_next_lines {
 }
 
 sub parse_exim_dbs {
-    my ($data_ref) = @_;
-
     my %db_parsers = (
         'retry'            => \&parse_retries,
         'ratelimit'        => \&parse_ratelimit,
@@ -2333,7 +2323,7 @@ sub parse_exim_dbs {
 
     for my $db_name ( keys %db_parsers ) {
         SpamReport::Exim::DB::open($db_name);
-        SpamReport::Exim::DB::read($db_name, $db_parsers{$db_name}, $data_ref);
+        SpamReport::Exim::DB::read($db_name, $db_parsers{$db_name});
         SpamReport::Exim::DB::close($db_name);
     }
 
@@ -2341,13 +2331,11 @@ sub parse_exim_dbs {
 }
 
 sub parse_exim_queue {
-    my ($data_ref) = @_;
-
-    SpamReport::Exim::parse_queued_mail_data($OPTS{'start_time'}, $OPTS{'end_time'}, $OPTS{'max_queue'}, $data_ref);
+    SpamReport::Exim::parse_queued_mail_data($OPTS{'start_time'}, $OPTS{'end_time'}, $OPTS{'max_queue'});
 }
 
 sub parse_logs {
-    my ($data, $handler, @logs) = @_;
+    my ($handler, @logs) = @_;
     if ($data->{'OPTS'}{'datelimit'} eq 'only today') {
         @logs = grep { -M $_ < 1 } @logs
     }
@@ -2371,7 +2359,7 @@ sub parse_logs {
                 show_progress($log, 'Reading')
             }
 
-            $handler->($lines, $year, $OPTS{'end_time'}, $data, $in_zone);
+            $handler->($lines, $year, $OPTS{'end_time'}, $in_zone);
 
             $allow_year_dec = 0;
         }
@@ -2386,20 +2374,18 @@ sub parse_logs {
 }
 
 sub parse_cpanel_logs {
-    my ($data) = @_;
     return if $data->{'OPTS'}{'datelimit'} eq 'not today';
-    parse_logs($data, \&SpamReport::Cpanel::find_email_creation, glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}');
+    parse_logs(\&SpamReport::Cpanel::find_email_creation, glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}');
 }
 
 sub parse_exim_logs {
-    parse_logs(shift, \&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
+    parse_logs(\&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
 }
 sub parse_dovecot_logs {
-    parse_logs(shift, \&SpamReport::Maillog::find_dovecot_logins, glob '/var/log/maillog{,{-*,.?}.gz}');
+    parse_logs(\&SpamReport::Maillog::find_dovecot_logins, glob '/var/log/maillog{,{-*,.?}.gz}');
 }
 
 sub setup_cpanel {
-    my ($data_ref) = @_;
     my $new;
 
     my $userdomains_path = '/etc/userdomains';
@@ -2437,13 +2423,12 @@ sub setup_cpanel {
 
     } keys %factories;
 
-    $data_ref->{$_} = $new->{$_} for keys %$new;
+    $data->{$_} = $new->{$_} for keys %$new;
 
     1;
 }
 
 sub main {
-    my $data = {};
     my $loadedcron;
 
     STDOUT->autoflush(1);
@@ -2452,18 +2437,18 @@ sub main {
     check_options() or pod2usage(2);
 
     unless ($OPTS{'latest'} or $OPTS{'cron'}) {
-        $data = SpamReport::Recent::loadcron($OPTS{'loadcron'});
+        SpamReport::Data::loadcron($OPTS{'loadcron'});
         $loadedcron = 1 if $data;
     }
-    DumpFile($OPTS{'dump'}.".cron", $data) if $loadedcron && $OPTS{'dump'};
+    DumpFile($OPTS{'dump'}.".cron") if $loadedcron && $OPTS{'dump'};
 
     if ($OPTS{'load'} or $OPTS{'latest'}) {
-        $data = SpamReport::Recent::load($OPTS{'load'}) if $OPTS{'load'};
-        $data = SpamReport::Recent::load() if $OPTS{'latest'};
+        SpamReport::Data::load($OPTS{'load'}) if $OPTS{'load'};
+        SpamReport::Data::load() if $OPTS{'latest'};
         SpamReport::Output::head_info($data->{'OPTS'});
     } else {
         die "This script only supports cPanel at this time." if (not -r '/etc/userdomains' && -d '/etc/valiases');
-        setup_cpanel($data);
+        setup_cpanel();
         SpamReport::Output::head_info(\%OPTS);
         $data->{'OPTS'} = \%OPTS;
     }
@@ -2482,22 +2467,22 @@ sub main {
         $OPTS{'datelimit'} = 'not today';
         for my $section ( @{ $OPTS{'run_sections'} } ) {
             next if $section eq 'check_queue';
-            $sections{$section}($data);
+            $sections{$section}();
         }
-        SpamReport::Cpanel::young_users($data);
-        SpamReport::Recent::exitsavecron($data);
+        SpamReport::Cpanel::young_users();
+        SpamReport::Data::exitsavecron();
     }
     elsif ($loadedcron) {
         $OPTS{'datelimit'} = 'only today';
         for my $section ( @{ $OPTS{'run_sections'} } ) {
-            $sections{$section}($data);
+            $sections{$section}();
         }
     }
     else {
         for my $section ( @{ $OPTS{'run_sections'} } ) {
-            $sections{$section}($data);
+            $sections{$section}();
         }
-        SpamReport::Cpanel::young_users($data);
+        SpamReport::Cpanel::young_users();
     }
     DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
 
@@ -2505,14 +2490,14 @@ sub main {
     #    SpamReport::Output::email_search_results($data);
     #}
     #else {
-    SpamReport::Recent::save($data) if $OPTS{'update'};
+    SpamReport::Data::save() if $OPTS{'update'};
     if (!$OPTS{'update'}) {
-        SpamReport::Output::analyze_results($data);
+        SpamReport::Output::analyze_results();
         if ($OPTS{'user'}) {
-            SpamReport::Output::analyze_user_results($data, $OPTS{'user'});
-            SpamReport::Output::print_user_results($data, $OPTS{'user'});
+            SpamReport::Output::analyze_user_results($OPTS{'user'});
+            SpamReport::Output::print_user_results($OPTS{'user'});
         } else {
-            SpamReport::Output::print_results($data) unless $OPTS{'cron'};
+            SpamReport::Output::print_results() unless $OPTS{'cron'};
         }
     }
     DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
