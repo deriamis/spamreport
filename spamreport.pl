@@ -8,7 +8,7 @@ use Storable qw(lock_store lock_retrieve);
 use POSIX qw(strftime);
 
 use vars qw($VERSION $data @ISA @EXPORT);
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
 $data = {};
@@ -305,7 +305,7 @@ use common::sense;
 use SpamReport::Data;
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 use Time::Local;
 use List::Util qw(shuffle);
@@ -329,7 +329,7 @@ sub head_info {
     print <<END_INFO
 
 SpamReport.pl - Report suspicious mail activity
-Written By: Ryan Egesdahl
+Written By: Ryan Egesdahl and Julian Fondren
 
 Running: $sections
 
@@ -766,7 +766,7 @@ use strict;
 use warnings;
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 use English qw( -no_match_vars );
 use Scalar::Util qw(openhandle);
@@ -1313,7 +1313,7 @@ use strict;
 use warnings;
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 use Time::Local;
 use Regexp::Common qw( SpamReport );
@@ -1492,7 +1492,7 @@ use common::sense;
 use SpamReport::Data;
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 use Time::Local;
 use Regexp::Common qw( Exim );
@@ -1887,7 +1887,7 @@ use IO::File;
 use Fcntl qw(:flock O_RDWR O_RDONLY O_WRONLY O_CREAT);
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 my $db_dir = '/var/spool/exim/db';
 my $open_dbs = {};
@@ -1954,7 +1954,7 @@ use SpamReport::Data;
 use common::sense;
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 use Time::Local;
 use Regexp::Common qw/ Maillog /;
@@ -2028,7 +2028,7 @@ use common::sense;
 use 5.008_008; use v5.8.8;
 
 use vars qw/$VERSION/;
-$VERSION = '2015122201';
+$VERSION = '2016021901';
 
 use Time::Local;
 use Time::localtime;
