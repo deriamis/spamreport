@@ -1229,9 +1229,12 @@ sub map_valiases {
             %temp = map {
                 chomp;
                 my @line = split ': ';
-                my @destinations = grep { m/^[^|:|"]/ } split /,\s*/, $line[1];
-                $line[0] => \@destinations;
-            } grep { !m/^(\*|\s*$)/ } <$fh>;
+                # infiniti had some malformed .bak'd files
+                if (defined $line[1]) {
+                    my @destinations = grep { m/^[^|:|"]/ } split /,\s*/, $line[1];
+                    $line[0] => \@destinations;
+                } else { () }
+            } grep { !m/^(\#|\*|\s*$)/ } <$fh>;
             close $fh;
 
         }
