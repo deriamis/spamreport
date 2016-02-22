@@ -18,11 +18,15 @@ my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
 
 sub loadcron {
     my ($path) = @_;
-    return retrievecron($path) if defined $path;
+    if (defined $path) {
+        print "Loading $path\n";
+        return retrievecron($path)
+    }
     return unless -e $cronpath;
     $path = $cronpath;
-    # if the *calendar date* of $path is the same as today's
-    if (POSIX::strftime("%F", localtime()) eq POSIX::strftime("%F", localtime((stat($path))[9]))) {
+    my ($fresh, $date) = _times($path);
+    if ($fresh) {
+        print "Loading $path ($date)\n";
         return retrievecron($path)
     }
     else {
@@ -31,10 +35,19 @@ sub loadcron {
     return;
 }
 
+sub _times {
+    my ($path) = @_;
+    my @time = localtime((stat($path))[9]);
+    my $day = POSIX::strftime("%F", @time);
+    my $date = POSIX::strftime("%F %T", @time);
+    my $fresh = POSIX::strftime("%F", localtime()) eq $day;
+    return ($fresh, $date);
+}
+
 my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
         responsibility domain_responsibility bounce_responsibility owner_responsibility
-        young_users young_mailboxes outip outscript
+        young_users young_mailboxes outip outscript hourly_volume total_outgoing total_bounce
     );
 sub savecron {
     my %newdata;
@@ -63,6 +76,8 @@ sub retrievecron {
 sub load {
     my ($path) = @_;
     $path = $logpath unless defined $path;
+    my ($fresh, $date) = _times($path);
+    print "Loading $path ($date)\n";
     #$data = LoadFile($path);
     $data = lock_retrieve($path);
 }
@@ -278,8 +293,31 @@ sub script {
 
 sub user {
     my ($user) = @_;
+    my $u = $user;
     for (_ticket($user)) {
-        return "$RED$user $_$NULL"
+        $user = "$RED$user $_$NULL"
+    }
+    if (exists $data->{'indicators'}{$u}) {
+        $user = "$user $CYAN@{[join ' ', sort keys %{$data->{'indicators'}{$u}}]}$NULL";
+    }
+    my $today_mails;
+    my %todays_hours; for my $time (time()) {
+        for (map { $time-3600*$_ } 0..23) {
+            $todays_hours{POSIX::strftime("%F %H", localtime($_))}++
+        }
+    }
+    for (grep { exists $todays_hours{$_} } keys %{$data->{'hourly_volume'}{$u}}) {
+        $today_mails += $data->{'hourly_volume'}{$u}{$_}
+    }
+    # assumes default 3-4 day window
+    if ($data->{'responsibility'}{$u}) {
+        my $recency = $today_mails / $data->{'responsibility'}{$u};
+        if ($recency < 0.1) {
+            $user = sprintf("$RED$user $RED(stale: %.1f%%)$NULL", $recency*100)
+        }
+        elsif ($recency > 0.8) {
+            $user = sprintf("$YELLOW$user $YELLOW(recent %.1f%%)$NULL", $recency*100)
+        }
     }
     $user
 }
@@ -361,6 +399,7 @@ sub analyze_results {
     SpamReport::Exim::analyze_num_recipients();
     analyze_mailboxes();
     SpamReport::Maillog::analyze_logins();
+    analyze_user_indicators();
 
     1;
 }
@@ -425,19 +464,43 @@ sub percent_report {
 }
 
 sub print_responsibility_results {
-    my ($emails, $bounces) = (0, 0);
-    for (values %{$data->{'mail_ids'}}) {
-        next if $_->{'in_queue'};
-        if ($_->{'type'} eq 'bounce') {
-            $bounces++;
-        } else {
-            $emails++;
-        }
-    }
+    my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
     my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
 
     percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
+}
+
+sub analyze_user_indicators {
+    my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
+    my %users;
+    my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
+    for (keys %{$data->{'responsibility'}}) {
+        $users{$_} = undef if $emails && $data->{'responsibility'}{$_} / $emails > $cutoff;
+    }
+    for (keys %{$data->{'bounce_responsibiltiy'}}) {
+        $users{$_} = undef if $bounces && $data->{'bounce_responsibility'}{$_} / $bounces > $cutoff;
+    }
+    for (values %{$data->{'mail_ids'}}) {
+        my $user = $_->{'who'};
+        next unless exists $users{$user};
+        next if $_->{'type'} eq 'bounce';
+        $users{$user}{'total'}++;
+        if ($_->{'subject'} =~ /^Account Details for |^Activate user account|^Welcome to/) {
+            $users{$user}{'botmail'}++
+        }
+        if ($_->{'sender'} =~ /[^\@_]+_/) {
+            $users{$user}{'underbar_mail'}++;
+        }
+    }
+    for (keys %users) {
+        if ($users{$_}{'total'} && $users{$_}{'botmail'} / $users{$_}{'total'} > 0.8) {
+            $data->{'indicators'}{$_}{'bots?'}++;
+        }
+        if ($users{$_}{'total'} && $users{$_}{'underbar_mail'} / $users{$_}{'total'} > 0.8) {
+            $data->{'indicators'}{$_}{'fake_accts?'}++;
+        }
+    }
 }
 
 sub print_recipient_results {
@@ -1660,6 +1723,7 @@ sub parse_queued_mail_data {
                             : exists $h_ref->{'local'}                ? ('local', $h_ref->{'ident'})
                             : $h_ref->{'host_auth'} =~ m/^dovecot_.*/ ? ('login', $h_ref->{'auth_id'})
                                                                       : ('relay', $h_ref->{'helo_name'});
+        $data->{'total_bounce'}++ if $type eq 'bounce';
 
         my $state = $h_ref->{'deliver_firsttime'} ? 'queued'
                   : $h_ref->{'frozen'}            ? 'frozen'
@@ -1757,14 +1821,22 @@ sub parse_exim_mainlog {
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
             }
             $data->{'mail_ids'}{$mailid}{'type'} = 'bounce';
+            $data->{'total_bounce'}++;
         }
         elsif (substr($line,37,2) eq '<=' && $line =~ s/T="(.*?)(?<!\\)" //) {
             my $subject = $1;
             $line =~ /<= (\S+)/;
             my $from = $1;
             $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
-            my @to = split / /, $1;
+            my $to = $1;
+            my @to = split / /, $to;
             my @to_domain = grep { defined $_ } map { /@(.*)/ && $1 } @to;
+            if ($to !~ tr/@//) {
+                # this is to a local users, only.  probably cronjob or like.
+                # discard.
+                delete $data->{'mail_ids'}{$mailid};
+                next;
+            }
             $data->{'mail_ids'}{$mailid}{'recipients'} = \@to if @to;
             $data->{'mail_ids'}{$mailid}{'sender'} = $from;
             my $from_domain;
@@ -1792,11 +1864,16 @@ sub parse_exim_mainlog {
                 # then we don't care.  people can spam themselves all they
                 # want.
                 delete $data->{'mail_ids'}{$mailid};
+            } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
+                # actually just go ahead and drop all mail that's only to local addresses
+                delete $data->{'mail_ids'}{$mailid};
             } else {
+                $data->{'total_outgoing'}++;
                 $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
                 $data->{'mailbox_responsibility'}{lc($from)}++;
                 for ($data->{'mail_ids'}{$mailid}{'who'}) {
                     last if /@/;
+                    $data->{'hourly_volume'}{$_}{substr($line,0,13)}++;
                     $data->{'responsibility'}{$_}++;
                     $data->{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
                         if exists $data->{'user2owner'}{$_}
