@@ -1463,7 +1463,7 @@ sub young_users {
         open my $f, '<', "/var/cpanel/users/$user"
             or do { warn "Unable to open /var/cpanel/users/$user : $!"; next };
         while ($_ = <$f>) {
-            if (/^STARTDATE=(\d+)/ && ($time - $1) > (30 * 3600*24)) {
+            if (/^STARTDATE=(\d+)/ && ($time - $1) < (14 * 3600*24)) {
                 $data->{'young_users'}{$user}++;
                 last
             }
