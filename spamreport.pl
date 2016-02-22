@@ -319,6 +319,12 @@ sub user {
             $user = sprintf("$YELLOW$user $YELLOW(recent %.1f%%)$NULL", $recency*100)
         }
     }
+    #if (exists $data->{'special_indicators'}{$u}{'hi_malware'}) {
+    #    my @urls = sample_urls($u);
+    #    if (@urls) {
+    #        $user .= join '', map { "\n\t$_"} @urls
+    #    }
+    #}
     $user
 }
 
@@ -328,6 +334,22 @@ sub _ticket {
     chomp(my $ticket = <$f>);
     close $f;
     $ticket ? $ticket : ();
+}
+
+sub sample_urls {
+    my ($user) = @_;
+    my %urls;
+    for (keys %{$data->{'mail_ids'}}) {
+        next unless exists $_->{'mail_ids'}{'in_queue'};
+        open my $f, '-|', "exim -Mvb $_" or next;
+        my $b = 0;
+        for (<$f>) {
+            $urls{$1}++ if m,(http://[\x21-\x7f]+),;
+            $b += length($_); last if $b > 1024;
+        }
+        close $f;
+    }
+    (grep { defined $_ } List::Util::shuffle(keys %urls))[0..3];
 }
 
 1;
@@ -492,6 +514,9 @@ sub analyze_user_indicators {
         if ($_->{'sender'} =~ /[^\@_]+_/) {
             $users{$user}{'underbar_mail'}++;
         }
+        #if ($_->{'subject'} =~ /^(?:hello|hi)!?$/i or $_->{'subject'} eq '') {
+        #    $data->{'special_indicators'}{$user}{'hi_malware'}++;
+        #}
     }
     for (keys %users) {
         if ($users{$_}{'total'} && $users{$_}{'botmail'} / $users{$_}{'total'} > 0.8) {
