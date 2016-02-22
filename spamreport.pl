@@ -297,6 +297,15 @@ sub user {
     for (_ticket($user)) {
         $user = "$RED$user $_$NULL"
     }
+    if (exists $data->{'in_history'}{$user}) {
+        my $delta = (time() - $data->{'in_history'}{$user}) / (24 * 3600);
+        if ($delta > 1) {
+            $user = sprintf "$MAGENTA$user (seen: %.1f days)$NULL", $delta
+        } else {
+            $user = sprintf "$MAGENTA$user (seen: %.1f hours)$NULL",
+                (time() - $data->{'in_history'}{$user}) / 3600
+        }
+    }
     if (exists $data->{'indicators'}{$u}) {
         $user = "$user $CYAN@{[join ' ', sort keys %{$data->{'indicators'}{$u}}]}$NULL";
     }
@@ -370,6 +379,7 @@ $VERSION = '2016021901';
 use Time::Local;
 use List::Util qw(shuffle);
 use SpamReport::ANSIColor;
+use Regexp::Common qw(SpamReport);
 
 my @time = CORE::localtime(time);
 my $tz_offset = timegm(@time) - timelocal(@time);
@@ -517,15 +527,53 @@ sub analyze_user_indicators {
         #if ($_->{'subject'} =~ /^(?:hello|hi)!?$/i or $_->{'subject'} eq '') {
         #    $data->{'special_indicators'}{$user}{'hi_malware'}++;
         #}
+        if ($_->{'sender_domain'} =~ $RE{'spam'}{'hi_source'} or
+            $_->{'sender_domain'} =~ $RE{'spam'}{'spammy_tld'}) {
+            $users{$user}{'badsender'}++;
+        }
+        if (grep { $_ =~ $RE{'spam'}{'hi_destination'} } @{$_->{'recipients'}}) {
+            $users{$user}{'badrecipient'}++;
+        }
+    }
+    my @history = history_since(time() - 7 * 3600 * 24);
+    USER: for my $user (keys %users) {
+        for (@history) {
+            if ($_->[1] =~ /\Q$user/) {
+                $data->{'in_history'}{$user} = $_->[0];
+                next USER;
+            }
+        }
     }
     for (keys %users) {
-        if ($users{$_}{'total'} && $users{$_}{'botmail'} / $users{$_}{'total'} > 0.8) {
+        next unless $users{$_}{'total'};
+        if ($users{$_}{'botmail'} / $users{$_}{'total'} > 0.8) {
             $data->{'indicators'}{$_}{'bots?'}++;
         }
-        if ($users{$_}{'total'} && $users{$_}{'underbar_mail'} / $users{$_}{'total'} > 0.8) {
+        if ($users{$_}{'underbar_mail'} / $users{$_}{'total'} > 0.8) {
             $data->{'indicators'}{$_}{'fake_accts?'}++;
         }
+        if ($users{$_}{'badsender'} / $users{$_}{'total'} > 0.9) {
+            $data->{'indicators'}{$_}{'bad_sender?'}++;
+        }
+        if ($users{$_}{'badrecipient'} / $users{$_}{'total'} > 0.9) {
+            $data->{'indicators'}{$_}{'bad_recipients?'}++;
+        }
     }
+}
+
+sub history_since {
+    my ($since) = @_;
+    my @history;
+    my $skip;
+    open my $f, '<', '/root/.bash_history' or return;
+    my $date = localtime();
+    while ($_ = <$f>) {
+        if (/^\#(\d+)/) { if ($1 < $since) { $skip++ } else { $date = $1 } next }
+        if ($skip) { undef $skip; next }
+        push @history, [$date, $_]
+    }
+    close $f;
+    @history;
 }
 
 sub print_recipient_results {
