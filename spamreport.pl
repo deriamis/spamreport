@@ -294,17 +294,20 @@ sub script {
 sub user {
     my ($user) = @_;
     my $u = $user;
-    for (_ticket($user)) {
+    for (_ticket($u)) {
         $user = "$RED$user $_$NULL"
     }
-    if (exists $data->{'in_history'}{$user}) {
-        my $delta = (time() - $data->{'in_history'}{$user}) / (24 * 3600);
+    if (exists $data->{'in_history'}{$u}) {
+        my $delta = (time() - $data->{'in_history'}{$u}) / (24 * 3600);
         if ($delta > 1) {
-            $user = sprintf "$MAGENTA$user (seen: %.1f days)$NULL", $delta
+            $user = sprintf "$MAGENTA$user $MAGENTA(seen: %.1f days)$NULL", $delta
         } else {
-            $user = sprintf "$MAGENTA$user (seen: %.1f hours)$NULL",
-                (time() - $data->{'in_history'}{$user}) / 3600
+            $user = sprintf "$MAGENTA$user $MAGENTA(seen: %.1f hours)$NULL",
+                (time() - $data->{'in_history'}{$u}) / 3600
         }
+    }
+    if (exists $data->{'young_users'}{$u}) {
+        $user = "$YELLOW$user $YELLOW(user age)$NULL";
     }
     if (exists $data->{'indicators'}{$u}) {
         $user = "$user $CYAN@{[join ' ', sort keys %{$data->{'indicators'}{$u}}]}$NULL";
@@ -499,6 +502,11 @@ sub print_responsibility_results {
     my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
     my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
 
+    if (5 < keys(%{$data->{'owner_responsibility'}})) {
+        # 5 to ignore random bad users on shared servers
+        percent_report($data->{'owner_responsibility'}, $bounces, $cutoff, "bouncebacks (owner)");
+        percent_report($data->{'owner_responsibility'}, $emails, $cutoff, "outgoing emails (owner)");
+    }
     percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
 }
@@ -521,6 +529,9 @@ sub analyze_user_indicators {
         if ($_->{'subject'} =~ /^Account Details for |^Activate user account|^Welcome to/) {
             $users{$user}{'botmail'}++
         }
+        if ($_->{'subject'} =~ /^Cron /) {
+            $users{$user}{'cronmail'}++;
+        }
         if ($_->{'sender'} =~ /[^\@_]+_/) {
             $users{$user}{'underbar_mail'}++;
         }
@@ -533,6 +544,11 @@ sub analyze_user_indicators {
         }
         if (grep { $_ =~ $RE{'spam'}{'hi_destination'} } @{$_->{'recipients'}}) {
             $users{$user}{'badrecipient'}++;
+        }
+    }
+    for my $user (keys %users) {
+        for (keys %{$data->{'outscript'}}) {
+            $users{$user}{'outscript'} += $data->{'outscript'}{$_} if m,/home\d*/\Q$user\E/,
         }
     }
     my @history = history_since(time() - 7 * 3600 * 24);
@@ -557,6 +573,12 @@ sub analyze_user_indicators {
         }
         if ($users{$_}{'badrecipient'} / $users{$_}{'total'} > 0.9) {
             $data->{'indicators'}{$_}{'bad_recipients?'}++;
+        }
+        if ($users{$_}{'cronmail'} / $users{$_}{'total'} > 0.9) {
+            $data->{'indicators'}{$_}{'cron'}++;
+        }
+        if ($users{$_}{'outscript'} / $users{$_}{'total'} > 0.9) {
+            $data->{'indicators'}{$_}{'script_comp'}++;
         }
     }
 }
