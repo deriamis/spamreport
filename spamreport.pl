@@ -24,8 +24,8 @@ sub loadcron {
         print "Loading $path\n";
         return retrievecron($path)
     }
-    elsif (defined $path) {
-        $loadcronfail = "no such file: $path";
+    elsif (defined $path || ! -e $cronpath) {
+        $loadcronfail = "no such file: @{[defined $path ? $path : $cronpath]}";
         return
     }
     else { $path = $cronpath }
@@ -2338,6 +2338,7 @@ sub check_options {
         }
     }
     umask 0177;
+    mkdir "/opt/hgmods/logs/", 0700;
 
     $OPTS{'start_time'} = $OPTS{'end_time'} - ($OPTS{'search_hours'} * 3600) if ( ! $OPTS{'start_time'} );
 
