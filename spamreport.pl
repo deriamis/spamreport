@@ -335,7 +335,7 @@ sub user {
             $user = sprintf("$RED$user $RED(stale: %.1f%%)$NULL", $recency*100)
         }
         elsif ($recency > 0.8) {
-            $user = sprintf("$YELLOW$user $YELLOW(recent %.1f%% = @{[SpamReport::Output::commify($todays_mails)]})$NULL", $recency*100)
+            $user = sprintf("$YELLOW$user $YELLOW(recent: %.1f%% = @{[SpamReport::Output::commify($todays_mails)]})$NULL", $recency*100)
         }
     }
     #if (exists $data->{'special_indicators'}{$u}{'hi_malware'}) {
