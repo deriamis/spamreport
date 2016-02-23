@@ -576,10 +576,10 @@ sub analyze_user_indicators {
             $data->{'indicators'}{$_}{'bad_recipients?'}++;
         }
         if ($users{$_}{'cronmail'} / $users{$_}{'total'} > 0.9) {
-            $data->{'indicators'}{$_}{'cron'}++;
+            $data->{'indicators'}{$_}{'cron?'}++;
         }
         if ($users{$_}{'outscript'} / $users{$_}{'total'} > 0.9) {
-            $data->{'indicators'}{$_}{'script_comp'}++;
+            $data->{'indicators'}{$_}{'script_comp?'}++;
         }
     }
 }
