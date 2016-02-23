@@ -7,24 +7,28 @@ use Exporter;
 use Storable qw(lock_store lock_retrieve);
 use POSIX qw(strftime);
 
-use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED);
+use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
 $VERSION = '2016021901';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
 $data = {};
 $MAX_RETAINED = 4;
+$loadcronfail = '';
 
 my $logpath = "/opt/hgmods/logs/spamreport.dat";
 my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
 
 sub loadcron {
     my ($path) = @_;
-    if (defined $path) {
+    if (defined $path && -e $path) {
         print "Loading $path\n";
         return retrievecron($path)
     }
-    return unless -e $cronpath;
-    $path = $cronpath;
+    elsif (defined $path) {
+        $loadcronfail = "no such file: $path";
+        return
+    }
+    else { $path = $cronpath }
     my ($fresh, $date) = _times($path);
     if ($fresh) {
         print "Loading $path ($date)\n";
@@ -32,6 +36,7 @@ sub loadcron {
     }
     else {
         rotatecron();
+        $loadcronfail = "file is tool old: $path ($date)";
     }
     return;
 }
@@ -64,6 +69,7 @@ sub exitsavecron {
         delete $data->{$_} unless exists $cronkeys{$_}
     }
     #DumpFile($cronpath, $data);
+    rotatecron() if -e $cronpath;
     lock_store $data, $cronpath;
     exit
 }
@@ -2207,6 +2213,7 @@ $INC{'SpamReport/Maillog.pm'} = '/dev/null';
 { # begin main package
 package SpamReport;
 use SpamReport::Data;
+use SpamReport::ANSIColor;
 
 use common::sense;
 use 5.008_008; use v5.8.8;
@@ -2287,6 +2294,7 @@ sub check_options {
         'cron'        => \$OPTS{'cron'},
         'update'      => \$OPTS{'update'},
         'load=s'      => \$OPTS{'load'},
+        'loadcron=s'  => \$OPTS{'loadcron'},
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
         'dump=s'      => \$OPTS{'dump'},
@@ -2637,7 +2645,10 @@ sub main {
 
     unless ($OPTS{'latest'} or $OPTS{'cron'}) {
         SpamReport::Data::loadcron($OPTS{'loadcron'});
-        $loadedcron = 1 if $data;
+        $loadedcron = 1 if keys %$data;
+        warn "${RED}daily cache not not loaded! $SpamReport::Data::loadcronfail\n"
+           . "This run will take much longer than normal$NULL\n"
+            unless $loadedcron;
     }
     DumpFile($OPTS{'dump'}.".cron") if $loadedcron && $OPTS{'dump'};
 
@@ -2685,6 +2696,7 @@ sub main {
             $sections{$section}();
         }
         SpamReport::Cpanel::young_users();
+        SpamReport::Data::savecron();
     }
     DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
 
