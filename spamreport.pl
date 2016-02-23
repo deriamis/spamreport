@@ -7,11 +7,12 @@ use Exporter;
 use Storable qw(lock_store lock_retrieve);
 use POSIX qw(strftime);
 
-use vars qw($VERSION $data @ISA @EXPORT);
+use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED);
 $VERSION = '2016021901';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
 $data = {};
+$MAX_RETAINED = 4;
 
 my $logpath = "/opt/hgmods/logs/spamreport.dat";
 my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
@@ -92,7 +93,7 @@ sub rotate {
     my ($path) = @_;
     $path = $logpath unless defined $path;
     my @logs = sort { -M $a <=> -M $b } glob "$path*";
-    unlink for @logs[$data->{'OPTS'}{'MAX_RETAINED'}..$#logs];
+    unlink for @logs[$MAX_RETAINED..$#logs];
     for (sort { -M $b <=> -M $a } @logs) {
         next unless /.(\d+)$/;
         my ($this, $next) = ($1, $1 + 1);
@@ -551,7 +552,7 @@ sub analyze_user_indicators {
             $users{$user}{'outscript'} += $data->{'outscript'}{$_} if m,/home\d*/\Q$user\E/,
         }
     }
-    my @history = history_since(time() - 7 * 3600 * 24);
+    my @history = reverse history_since(time() - 7 * 3600 * 24);
     USER: for my $user (keys %users) {
         for (@history) {
             if ($_->[1] =~ /\Q$user/) {
@@ -825,6 +826,17 @@ PHP Scripts:
 BOX
 }
 
+sub user_hour_report {
+    my ($user) = @_;
+    return unless $data->{'OPTS'}{'hourly_report'};
+    my $r = "----------------------------------------\n\n";
+    for (sort keys %{$data->{'hourly_volume'}{$user}}) {
+        $r .= "$_: " . commify($data->{'hourly_volume'}{$user}{$_}) . "\n"
+    }
+    $r .= "\n";
+    $r
+}
+
 sub print_user_results {
     my ($user) = @_;
     my $u = $data->{'suspects'}{'users'}{$user}
@@ -846,7 +858,7 @@ Reference: spamreport
    Server: $hostname
      User: $user
 
-----------------------------------------
+@{[user_hour_report($user)]}----------------------------------------
 
 User sent approximately @{[commify($u->{'sent'})]} messages to @{[commify($u->{'recipients'})]} unique recipients.
 There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addresses'})]} unique addresses, @{[sprintf "%.2f%%", 100*$u->{'bounce'}/$total]} of the emails.
@@ -2247,8 +2259,10 @@ my %OPTS = (
     'run_sections'  => undef,
     'read_lines'    => 10000,
     'r_cutoff'      => 1.0,
-    'keep'          => 4,
+    'hourly_report' => undef,
 );
+
+my @OPTS_OVERRIDE = qw(hourly_report r_cutoff);
 
 my $hostname = hostname_long();
 my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
@@ -2276,7 +2290,8 @@ sub check_options {
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
         'dump=s'      => \$OPTS{'dump'},
-        'keep=i'      => \$OPTS{'keep'},
+        'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
+        'hourly'      => \$OPTS{'hourly_report'},
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
@@ -2636,6 +2651,9 @@ sub main {
         SpamReport::Output::head_info(\%OPTS);
         $data->{'OPTS'} = \%OPTS;
     }
+    for (@OPTS_OVERRIDE) {
+        $data->{'OPTS'}{$_} = $OPTS{$_}
+    }
 
     if (defined $OPTS{'user'}) {
         if (exists $data->{'domain2user'}{$OPTS{'user'}}) {
@@ -2674,7 +2692,7 @@ sub main {
     #    SpamReport::Output::email_search_results($data);
     #}
     #else {
-    SpamReport::Data::save() if $OPTS{'update'};
+    SpamReport::Data::save() unless $OPTS{'latest'};
     if (!$OPTS{'update'}) {
         SpamReport::Output::analyze_results();
         if ($OPTS{'user'}) {
@@ -2720,6 +2738,7 @@ Options:
                 | --dbs                 : check exim databases
 
     -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
+                | --hourly              : add an emails/hour section to --user output
 
                 | --cron                : gather crondata and save it, without analysis or output
                 | --update              : gather fulldata and save it.  uses crondata if fresh
