@@ -312,23 +312,23 @@ sub user {
     if (exists $data->{'indicators'}{$u}) {
         $user = "$user $CYAN@{[join ' ', sort keys %{$data->{'indicators'}{$u}}]}$NULL";
     }
-    my $today_mails;
+    my $todays_mails;
     my %todays_hours; for my $time (time()) {
         for (map { $time-3600*$_ } 0..23) {
             $todays_hours{POSIX::strftime("%F %H", localtime($_))}++
         }
     }
     for (grep { exists $todays_hours{$_} } keys %{$data->{'hourly_volume'}{$u}}) {
-        $today_mails += $data->{'hourly_volume'}{$u}{$_}
+        $todays_mails += $data->{'hourly_volume'}{$u}{$_}
     }
     # assumes default 3-4 day window
     if ($data->{'responsibility'}{$u}) {
-        my $recency = $today_mails / $data->{'responsibility'}{$u};
+        my $recency = $todays_mails / $data->{'responsibility'}{$u};
         if ($recency < 0.1) {
             $user = sprintf("$RED$user $RED(stale: %.1f%%)$NULL", $recency*100)
         }
         elsif ($recency > 0.8) {
-            $user = sprintf("$YELLOW$user $YELLOW(recent %.1f%%)$NULL", $recency*100)
+            $user = sprintf("$YELLOW$user $YELLOW(recent %.1f%% = @{[SpamReport::Output::commify($todays_mails)]})$NULL", $recency*100)
         }
     }
     #if (exists $data->{'special_indicators'}{$u}{'hi_malware'}) {
