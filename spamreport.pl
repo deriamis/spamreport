@@ -518,6 +518,9 @@ sub print_responsibility_results {
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
 }
 
+my $hisource = qr/$RE{'spam'}{'hi_source'}/;
+my $spamtld  = qr/$RE{'spam'}{'spammy_tld'}/;
+my $hidest   = qr/$RE{'spam'}{'hi_destination'}/;
 sub analyze_user_indicators {
     my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
     my %users;
@@ -545,11 +548,11 @@ sub analyze_user_indicators {
         #if ($_->{'subject'} =~ /^(?:hello|hi)!?$/i or $_->{'subject'} eq '') {
         #    $data->{'special_indicators'}{$user}{'hi_malware'}++;
         #}
-        if ($_->{'sender_domain'} =~ $RE{'spam'}{'hi_source'} or
-            $_->{'sender_domain'} =~ $RE{'spam'}{'spammy_tld'}) {
+        if ($_->{'sender_domain'} =~ $hisource or
+            $_->{'sender_domain'} =~ $spamtld) {
             $users{$user}{'badsender'}++;
         }
-        if (grep { $_ =~ $RE{'spam'}{'hi_destination'} } @{$_->{'recipients'}}) {
+        if (grep { $_ =~ $hidest } @{$_->{'recipients'}}) {
             $users{$user}{'badrecipient'}++;
         }
     }
@@ -1588,11 +1591,13 @@ sub map_valiases {
     return (\%alias2dest, \%dest2alias);
 }
 
+my $cpaddpop = qr/$RE{'cpanel'}{'addpop'}/;
+my $aptimest = qr/$RE{'apache'}{'timestamp'}/;
 sub find_email_creation {
     my ($lines, $end_time, @search_list) = @_;
     for my $line ( @{ $lines } ) {
             
-        if ( $line =~ m/$RE{'cpanel'}{'addpop'}/ ) {
+        if ( $line =~ $cpaddpop ) {
 
             my %vars = map { split /=/ } split /&/, $4;
             my $login = $vars{'email'} . '@' . $vars{'domain'};
@@ -1603,7 +1608,7 @@ sub find_email_creation {
             my $username = $2;
             my $timestamp = 0;
 
-            if ( $3 =~ m/$RE{'apache'}{'timestamp'}/ ) {
+            if ( $3 =~ $aptimest ) {
                 $timestamp = timegm($6, $5, $4, $2, $1 - 1, $3 - 1900) - ($7 * 36);
             }
 
@@ -1642,9 +1647,9 @@ sub next {
 
         for ( my $n = 0; $n < scalar @{ $lines }; $n++ ) {
 
-            if ( $lines->[$n] =~ m/$RE{'cpanel'}{'addpop'}/ ) {
+            if ( $lines->[$n] =~ $cpaddpop ) {
 
-                if ( $3 ne $last_timestamp and $3 =~ m/$RE{'cpanel'}{'addpop'}/ ) {
+                if ( $3 ne $last_timestamp and $3 =~ $cpaddpop ) {
                     $log_timestamp = timegm($6, $5, $4, $2, $1 - 1, $3 - 1900) - ($7 * 36);
 
                     next if ( $log_timestamp < $OPTS->{'start_time'} );
@@ -1878,6 +1883,7 @@ sub parse_queued_mail_data {
     }
 }
 
+my $eximinfoscript = qr/$RE{'exim'}{'info'}{'script'}/;
 sub parse_exim_mainlog {
     my ($lines, $year, $end_time, $in_zone) = @_;
     my @lines = @$lines;
@@ -1904,7 +1910,7 @@ sub parse_exim_mainlog {
             return
         }
 
-        if ( substr($line,20,4) eq 'cwd=' && $line =~ $RE{'exim'}{'info'}{'script'} ) {
+        if ( substr($line,20,4) eq 'cwd=' && $line =~ $eximinfoscript ) {
             $data->{'scriptdirs'}{$1}++;
             next
         }
@@ -2443,6 +2449,7 @@ sub parse_ratelimit {
 
 }
 
+my $hidesti = qr/$RE{'spam'}{'hi_destination'}/i;
 sub parse_wait {
  
     my ($key, $value) = @_;
@@ -2460,7 +2467,7 @@ sub parse_wait {
     my ($time_stamp, $count, $sequence) = unpack ('l x4 i i', $value);
     my @mail_ids = unpack ("x[l] x4 x[i] x[i] (A16)$count", $value);
 
-    if ($host =~ m/$RE{'spam'}{'hi_destination'}/i) {
+    if ($host =~ $hidesti) {
         $data->{'mail_ids'}{$_}{'send_delays'}++ for (@mail_ids);
         $data->{'dest_domains'}{$1}{'delays'}++ for (@mail_ids);
     }
