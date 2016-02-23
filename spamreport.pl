@@ -804,7 +804,7 @@ sub topsubjects {
     my $width = 0;
     for (values %$h) { $width = length($_) if $width < length($_) }
     (join "\n",
-        map { sprintf "%${width}d $_", $h->{$_} }
+        map { sprintf "%${width}d %s", $h->{$_}, $_ }
         grep { defined $_ }
         (sort { $h->{$b} <=> $h->{$a} } keys %$h)[0..14])
 }
