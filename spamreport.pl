@@ -536,6 +536,10 @@ sub analyze_user_indicators {
         next unless exists $users{$user};
         next if $_->{'type'} eq 'bounce';
         $users{$user}{'total'}++;
+        if (exists $_->{'auth_sender_domain'} && exists $_->{'sender_domain'} &&
+                lc($_->{'auth_sender_domain'}) ne lc($_->{'sender_domain'})) {
+            $users{$user}{'mismatched_domain'}++;
+        }
         if ($_->{'subject'} =~ /^Account Details for |^Activate user account|^Welcome to/) {
             $users{$user}{'botmail'}++
         }
@@ -589,6 +593,11 @@ sub analyze_user_indicators {
         }
         if ($users{$_}{'outscript'} / $users{$_}{'total'} > 0.9) {
             $data->{'indicators'}{$_}{'script_comp?'}++;
+        }
+        for ($users{$_}{'mismatched_domain'} / $users{$_}{'total'}) {
+            if ($_ > 0.2) {
+                $data->{'indicators'}{$_}{sprintf("auth_mismatch:%.1f%%", $_)}++
+            }
         }
     }
 }
@@ -2022,7 +2031,10 @@ sub parse_exim_mainlog {
                 $data->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
             }
             $data->{'mail_ids'}{$mailid}{'subject'} = $subject;
-            $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1 if $line =~ / A=dovecot_\S+:(\S+)/;
+            if ($line =~ / A=dovecot_\S+:(\S+\@(\S+))/) {
+                $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
+                $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2;
+            }
             $data->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
             $data->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
             $data->{'mail_ids'}{$mailid}{'who'} = who($data->{'mail_ids'}{$mailid});
