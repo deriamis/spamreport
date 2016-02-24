@@ -707,6 +707,19 @@ sub print_queue_results {
     }
 }
 
+my %user_tests = (
+    bounce_recipient => sub { exists $_[0]->{'recipient_users'}{$_[1]} },
+    bounce_source => sub { exists $_[0]->{'source'}{$_[1]} },
+    who => sub { $_[0]->{'who'} eq $_[1] },
+    path => sub { $_[0] =~ m,^/[^/]+/$_[1]/, }
+);
+my %root_tests = (
+    bounce_recipient => sub { 1 },
+    bounce_source => sub { 1 },
+    who => sub { 1 },
+    path => sub { 1 },
+);
+
 sub analyze_user_results {
     my ($user) = @_;
     my ($sent, $bounce, $queued, $boxtrapper) = (0, 0, 0);
@@ -718,21 +731,23 @@ sub analyze_user_results {
     my %script;
     my %recip;
     my %subject;
+    my $tests = \%user_tests;
+    $tests = \%root_tests if $user eq 'root';
 
     my %dirs; suppressed_scriptdirs(\%dirs);
 
     for my $email (values %{$data->{'mail_ids'}}) {
-        if ($email->{'type'} eq 'bounce' && exists $email->{'recipient_users'}{$user}) {
+        if ($email->{'type'} eq 'bounce' && $tests->{'bounce_recipient'}($email, $user)) {
             $bounce++;
             $bounce{$email->{'recipients'}->[0]}++;
             $queued++ if $email->{'in_queue'};
         }
-        elsif ($email->{'type'} eq 'bounce' && exists $email->{'source'}{$user}) {
+        elsif ($email->{'type'} eq 'bounce' && $tests->{'bounce_source'}($email, $user)) {
             $bounce++;
             $bounce{$email->{'source'}}++;
             $queued++ if $email->{'in_queue'};
         }
-        elsif ($email->{'who'} eq $user) {
+        elsif ($tests->{'who'}($email, $user)) {
             $sent++;
             $sent_as{$email->{'sender'}}++;
             $queued++ if $email->{'in_queue'};
@@ -756,11 +771,11 @@ sub analyze_user_results {
         }
     }
     for (keys %dirs) {
-        next unless m,^/[^/]+/$user/,;
+        next unless $tests->{'path'}($_, $user);
         $cwd{$_} += $dirs{$_}
     }
     for (keys %{$data->{'outscript'}}) {
-        next unless m,^/[^/]+/$user/,;
+        next unless $tests->{'path'}($_, $user);
         $script{$_} += $data->{'outscript'}{$_}
     }
 
@@ -2674,7 +2689,7 @@ sub main {
         $data->{'OPTS'}{$_} = $OPTS{$_}
     }
 
-    if (defined $OPTS{'user'}) {
+    if (defined $OPTS{'user'} && $OPTS{'user'} ne 'root') {
         if (exists $data->{'domain2user'}{$OPTS{'user'}}) {
             print "Assuming you mean $data->{'domain2user'}{$OPTS{'user'}} by $OPTS{'user'}\n";
             $OPTS{'user'} = $data->{'domain2user'}{$OPTS{'user'}};
