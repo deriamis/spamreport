@@ -489,7 +489,7 @@ sub widths {
 }
 
 sub percent_report {
-    my ($h, $total, $limit, $title) = @_;
+    my ($h, $total, $limit, $title, $discarded) = @_;
     return unless $total;
     my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
     my @width = (0, 0);
@@ -498,7 +498,9 @@ sub percent_report {
         $width[1] = length(sprintf "%.1f", 100*$h->{$_}/$total) if length(sprintf "%.1f", $h->{$_}) > $width[1]
     }
 
-    print "\nResponsibility for @{[commify($total)]} $title\n";
+    $discarded = sprintf(" (incl. %s emails, discarded for hitting 500/hour limits)", commify($discarded))
+        if $discarded;
+    print "\nResponsibility for @{[commify($total)]} $title$discarded\n";
     for (reverse @list) {
         printf "%$width[0]d %$width[1].1f%% %s\n", $h->{$_}, 100*$h->{$_}/$total,
             SpamReport::Annotate::user($_)
@@ -514,7 +516,7 @@ sub print_responsibility_results {
         percent_report($data->{'owner_responsibility'}, $bounces, $cutoff, "bouncebacks (owner)");
         percent_report($data->{'owner_responsibility'}, $emails, $cutoff, "outgoing emails (owner)");
     }
-    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails");
+    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails", $data->{'total_discarded'});
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
 }
 
@@ -599,13 +601,16 @@ sub analyze_user_indicators {
         }
         for ($users{$_}{'boxtrapper'} / $users{$_}{'total'}) {
             if ($_ > 0.5) {
-                $data->{'indicators'}{$_}{sprintf("boxtrapper:%.1f%%", $_)}++;
+                $data->{'indicators'}{$_}{sprintf("boxtrapper:%.1f%%", $_*100)}++;
             }
         }
         for ($users{$_}{'mismatched_domain'} / $users{$_}{'total'}) {
             if ($_ > 0.2) {
-                $data->{'indicators'}{$_}{sprintf("auth_mismatch:%.1f%%", $_)}++
+                $data->{'indicators'}{$_}{sprintf("auth_mismatch:%.1f%%", $_*100)}++
             }
+        }
+        if ($data->{'discarded_users'}{$_}) {
+            $data->{'indicators'}{$_}{sprintf("discard:%.1f%%", $data->{'discarded_users'}{$_}/$users{$_}{'total'}*100)}++;
         }
     }
 }
@@ -2078,6 +2083,13 @@ sub parse_exim_mainlog {
                 }
             }
         }
+        elsif (substr($line,37,2) eq '**') {
+            if ($line =~ m,Domain (\S+) has exceeded the max emails per hour,) {
+                $data->{'discarded_users'}{$data->{'domain2user'}{$1}}++;
+                $data->{'mail_ids'}{$mailid}{'500_discarded'}++;
+                $data->{'total_discarded'}++;
+            }
+        }
     }
 }
 
@@ -2863,11 +2875,30 @@ fulldata: a serialized data structure containing all data, including today's.
 
 Usage:
 
-  spamreport              # get a report.  if crondata is fresh, it is used
-  spamreport -u <user>    # get user report.  fulldata is used if present
-  spamreport --cron       # refresh crondata
-  spamreport --update     # get fulldata and save it
-  spamreport --latest     # get a report based on the last-saved fulldata
+    spamreport              # get a report.  if crondata is fresh, it is used
+    spamreport -u <user>    # get user report.  fulldata is used if present
+    spamreport --cron       # refresh crondata
+    spamreport --update     # get fulldata and save it
+    spamreport --latest     # get a report based on the last-saved fulldata
+
+Indicator key:
+
+    ABC-12341234       | a ticket ID in an active abusetool suspension
+    seen:              | first root history mention of user within last week
+    (user age)         | user was added to cPanel <2 weeks ago
+    stale:             | <10% of user's email was sent in last 24 hours
+    recent:            | >80% of user's email was sent in last 24 hours
+
+    fake_accts?        | >80% of email sent by underbar_accounts@domain.com
+    bad_sender?        | >90% of email has a suspect domain or spam TLD
+    bad_recipients?    | >90% of email intended for critical destinations
+    cron?              | >90% of email has subjects suggesting crond mail
+    script_comp?       | >90% of email sent by a script
+    bots?              | >80% of email has subjects resembling CMS mail
+                         e.g. Account Details for ...
+
+    boxtrapper:        | >50% of email has subjects suggesting boxtrapper
+    auth_mismatch:     | >20% of email has mismatched auth_sender/sender
 
 =head1 MODULES
 
