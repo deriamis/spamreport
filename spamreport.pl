@@ -1980,7 +1980,7 @@ sub parse_exim_mainlog {
         }
         elsif (substr($line,37,5) eq '<= <>') {
             $line =~ s/T=".*?(?<!\\)" //;
-            next unless $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
+            next unless $line =~ /.*for (.*)$/;  # leading .* causes it to backtrack from the right
             my @to = split / /, $1;
             $line =~ / S=(\S+)/; for my $script ($1) {
                 if (defined $script && $script !~ /@/ && $script =~ /\D/) {
