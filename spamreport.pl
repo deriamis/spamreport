@@ -118,6 +118,120 @@ $INC{'SpamReport/Data.pm'} = '/dev/null';
 }
 
 BEGIN {
+package SpamReport::Tracking::Scripts;
+use YAML::Syck qw(DumpFile LoadFile);
+use vars qw($VERSION);
+use File::Which qw ( which );
+use common::sense;
+
+$VERSION = '2016022401';
+my $md5sum = which('md5sum');
+my $trackpath = "/opt/hgmods/logs/spamscripts.dat";
+
+my $tracking;
+my $attempts;
+
+sub load { eval { $tracking = LoadFile($trackpath) } }
+sub save { DumpFile($trackpath, $tracking) }
+
+my %cache;
+
+# script tracking is relatively expensive and probably
+# shouldn't happen except on --cron runs
+sub disable {
+    *{"SpamReport::Tracking::Scripts::load"}
+    = *{"SpamReport::Tracking::Scripts::save"}
+    = *{"SpamReport::Tracking::Scripts::script"} = sub { }
+}
+
+sub script {
+    my ($path, $ip) = @_;
+    my $md5 = md5sum($path) || return;
+    if ($md5 =~ /^[a-f0-9]{32}$/i) {
+        $tracking->{$md5}{ips}{$ip}++;
+        $tracking->{$md5}{paths}{$path}++;
+    }
+}
+
+sub md5sum {
+    my ($path) = @_;
+    return $cache{$path} if exists $cache{$path};
+    return unless -f $path;
+    open my $f, '-|', $md5sum, $path or return;
+    my $md5 = <$f>;
+    close $f;
+    $md5 =~ s/ .*//;
+    chomp $md5;
+    $md5
+}
+
+# /usr/bin/time perl -MDigest::MD5 -le '$m = Digest::MD5->new; open my $f, "<", "bigfile"; $m->addfile($f); print $m->hexdigest'
+# cd573cfaace07e7949bc0c46028904ff
+# 3.86user 0.47system 0:04.34elapsed 99%CPU (0avgtext+0avgdata 2432maxresident)k
+# 0inputs+0outputs (0major+674minor)pagefaults 0swaps
+#
+# # /usr/bin/time md5sum bigfile 
+# cd573cfaace07e7949bc0c46028904ff  bigfile
+# 2.75user 0.41system 0:03.19elapsed 98%CPU (0avgtext+0avgdata 692maxresident)k
+# 0inputs+0outputs (0major+216minor)pagefaults 0swaps
+#
+# --
+# 1GB file.  md5sum: a bit faster, 700MB of RAM.
+# vs. Digest::MD5: a bit slower, 2500MB of RAM.
+
+1;
+} # end module SpamReport::Tracking::Scripts
+BEGIN {
+$INC{'SpamReport/Tracking/Scripts.pm'} = '/dev/null';
+}
+
+BEGIN {
+package SpamReport::Tracking::Performance;
+use SpamReport::Data;
+use vars qw($VERSION);
+use common::sense;
+
+$VERSION = '2016022401';
+my $trackpath = "/opt/hgmods/logs/spamperformance.log";
+
+# 1MB is enough logs for anybody
+if (-s($trackpath) > 1024*1024) {
+    my @lines;
+    if (open my $f, '<', $trackpath) {
+        while ($_ = <$f>) {
+            last if @lines > 100;
+            push @lines, $_
+        }
+        close $f;
+    }
+    if (@lines && open my $f, '>', $trackpath) {
+        print {$f} @lines;
+        close $f;
+    }
+}
+
+my $start = time();
+my $ARGS = "@ARGV";
+
+END {
+    my $end = time();
+    if (open my $f, '>>', $trackpath) {
+        printf {$f} "%s + %d secs : %d tracked emails : %s\n", 
+            scalar(localtime($start)),
+            $end - $start, 
+            scalar(keys %{$data->{'mail_ids'}}),
+            $ARGS;
+        close $f;
+    }
+}
+
+1;
+} # end module SpamReport::Tracking::Performance
+BEGIN {
+$INC{'SpamReport/Tracking/Performance.pm'} = '/dev/null';
+}
+
+BEGIN {
 package Regexp::Common::Exim;
 
 use strict;
@@ -449,7 +563,7 @@ sub email_search_results {
 
 sub analyze_results {
     SpamReport::Exim::analyze_queued_mail_data();
-    SpamReport::Exim::analyze_num_recipients();
+    #SpamReport::Exim::analyze_num_recipients();
     analyze_mailboxes();
     SpamReport::Maillog::analyze_logins();
     analyze_user_indicators();
@@ -459,7 +573,7 @@ sub analyze_results {
 
 sub print_results {
     print_queue_results() if exists $data->{'queue_top'};
-    print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
+    #print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
     print_login_results() if exists $data->{'suspects'}{'logins'};
@@ -2014,8 +2128,9 @@ sub parse_exim_mainlog {
         my $mailid = substr($line,20,16);
         
         if (substr($line,37,24) eq 'SMTP connection outbound') {
-            next unless $line =~ / F=(.+)/;
-            $data->{'outscript'}{$1}++;
+            next unless $line =~ / I=(\S+) S=\S+ F=(.+)/;
+            $data->{'outscript'}{$2}++;
+            SpamReport::Tracking::Scripts::script($2, $1);
         }
         elsif (substr($line,37,5) eq '<= <>') {
             $line =~ s/T=".*?(?<!\\)" //;
@@ -2411,6 +2526,7 @@ sub check_options {
         'loadcron=s'  => \$OPTS{'loadcron'},
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
+        'scripts'     => \$OPTS{'scripts'},
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
         'hourly'      => \$OPTS{'hourly_report'},
@@ -2760,6 +2876,12 @@ sub main {
 
     check_options() or pod2usage(2);
 
+    unless ($OPTS{'cron'} || $OPTS{'scripts'}) {
+        SpamReport::Tracking::Scripts::disable()
+    }
+
+    SpamReport::Tracking::Scripts::load();
+
     unless ($OPTS{'latest'} or $OPTS{'cron'}) {
         SpamReport::Data::loadcron($OPTS{'loadcron'});
         $loadedcron = 1 if keys %$data;
@@ -2800,6 +2922,7 @@ sub main {
             $sections{$section}();
         }
         SpamReport::Cpanel::young_users();
+        SpamReport::Tracking::Scripts::save();
         SpamReport::Data::exitsavecron();
     }
     elsif ($loadedcron) {
@@ -2832,6 +2955,7 @@ sub main {
         }
     }
     DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
+    SpamReport::Tracking::Scripts::save();
 }
 
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
@@ -2881,6 +3005,8 @@ Options:
                                           $path.cron  : --cron seeded data, if one was loaded
                                           $path.scan  : pre-analysis data, after scans are done
                                           $path.post  : post-analysis data
+                | --scripts             : track IPs hitting md5sums of scripts sending email
+                                          (implied by --cron)
 
                 | --help
                 | --man
@@ -2917,6 +3043,30 @@ Indicator key:
 
     boxtrapper:        | >50% of email has subjects suggesting boxtrapper
     auth_mismatch:     | >20% of email has mismatched auth_sender/sender
+
+=head1 FILES
+
+    /opt/hgmods/logs/spamreportcron.dat  (and .1, .2, ...)
+
+        Storable cache of data drawn from prior calendar days' email logs.
+    
+    /opt/hgmods/logs/spamreport.dat      (and .1, .2, ...)
+
+        Storable cache of pre-analysis data drom from prior runs
+        and --update runs.
+
+    /opt/hgmods/logs/spamscripts.dat
+
+        YAML cache of script tracking.
+
+        "md5sum" -> "ips" -> (ips -> # hits by IP against md5sum)
+                    "paths" -> (script paths -> # hits against path)
+
+    /opt/hgmods/logs/spamperformance.log
+
+        Text log of spamreport performance data.
+
+        $date + $runtime secs : $email tracked emails : @ARGV
 
 =head1 MODULES
 
@@ -2998,6 +3148,10 @@ similar parsing code.
 =head3 rotate
 
 =head3 rotatecron
+
+=head2 package SpamReport::Tracking::Scripts;
+
+=head2 package SpamReport::Tracking::Performance;
 
 =head2 package SpamReport::Annotate;
 
