@@ -307,9 +307,9 @@ sub user {
     if (exists $data->{'in_history'}{$u}) {
         my $delta = (time() - $data->{'in_history'}{$u}) / (24 * 3600);
         if ($delta > 1) {
-            $user = sprintf "$MAGENTA$user $MAGENTA(seen: %.1f days)$NULL", $delta
+            $user = sprintf "$MAGENTA%s $MAGENTA(seen: %.1f days)$NULL", $user, $delta
         } else {
-            $user = sprintf "$MAGENTA$user $MAGENTA(seen: %.1f hours)$NULL",
+            $user = sprintf "$MAGENTA%s $MAGENTA(seen: %.1f hours)$NULL", $user,
                 (time() - $data->{'in_history'}{$u}) / 3600
         }
     }
@@ -332,10 +332,10 @@ sub user {
     if ($data->{'responsibility'}{$u}) {
         my $recency = $todays_mails / $data->{'responsibility'}{$u};
         if ($recency < 0.1) {
-            $user = sprintf("$RED$user $RED(stale: %.1f%%)$NULL", $recency*100)
+            $user = sprintf("$RED%s $RED(stale: %.1f%%)$NULL", $user, $recency*100)
         }
         elsif ($recency > 0.8) {
-            $user = sprintf("$YELLOW$user $YELLOW(recent: %.1f%% = @{[SpamReport::Output::commify($todays_mails)]})$NULL", $recency*100)
+            $user = sprintf("$YELLOW%s $YELLOW(recent: %.1f%% = @{[SpamReport::Output::commify($todays_mails)]})$NULL", $user, $recency*100)
         }
     }
     #if (exists $data->{'special_indicators'}{$u}{'hi_malware'}) {
@@ -559,6 +559,9 @@ sub analyze_user_indicators {
         if (grep { $_ =~ $hidest } @{$_->{'recipients'}}) {
             $users{$user}{'badrecipient'}++;
         }
+        if ($_->{'subject'} =~ /^Your email requires verification verify#/) {
+            $users{$user}{'boxtrapper'}++;
+        }
     }
     for my $user (keys %users) {
         for (keys %{$data->{'outscript'}}) {
@@ -593,6 +596,11 @@ sub analyze_user_indicators {
         }
         if ($users{$_}{'outscript'} / $users{$_}{'total'} > 0.9) {
             $data->{'indicators'}{$_}{'script_comp?'}++;
+        }
+        for ($users{$_}{'boxtrapper'} / $users{$_}{'total'}) {
+            if ($_ > 0.5) {
+                $data->{'indicators'}{$_}{sprintf("boxtrapper:%.1f%%", $_)}++;
+            }
         }
         for ($users{$_}{'mismatched_domain'} / $users{$_}{'total'}) {
             if ($_ > 0.2) {
