@@ -53,6 +53,7 @@ sub _times {
 my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
         responsibility domain_responsibility bounce_responsibility owner_responsibility
+        bounce_owner_responsibility mailbox_responsibility
         young_users young_mailboxes outip outscript hourly_volume total_outgoing total_bounce
     );
 sub savecron {
@@ -489,7 +490,7 @@ sub widths {
 }
 
 sub percent_report {
-    my ($h, $total, $limit, $title, $discarded) = @_;
+    my ($h, $total, $limit, $title, $discarded, $annotate) = @_;
     return unless $total;
     my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
     my @width = (0, 0);
@@ -498,12 +499,12 @@ sub percent_report {
         $width[1] = length(sprintf "%.1f", 100*$h->{$_}/$total) if length(sprintf "%.1f", $h->{$_}) > $width[1]
     }
 
-    $discarded = sprintf(" (incl. %s emails, discarded for hitting 500/hour limits)", commify($discarded))
+    $discarded = sprintf(" (incl. %s emails discarded for hitting 500/hour limits)", commify($discarded))
         if $discarded;
     print "\nResponsibility for @{[commify($total)]} $title$discarded\n";
     for (reverse @list) {
         printf "%$width[0]d %$width[1].1f%% %s\n", $h->{$_}, 100*$h->{$_}/$total,
-            SpamReport::Annotate::user($_)
+            $annotate->($_)
     }
 }
 
@@ -513,11 +514,11 @@ sub print_responsibility_results {
 
     if (5 < keys(%{$data->{'owner_responsibility'}})) {
         # 5 to ignore random bad users on shared servers
-        percent_report($data->{'owner_responsibility'}, $bounces, $cutoff, "bouncebacks (owner)");
-        percent_report($data->{'owner_responsibility'}, $emails, $cutoff, "outgoing emails (owner)");
+        percent_report($data->{'owner_responsibility'}, $bounces, $cutoff, "bouncebacks (owner)", undef, sub { @_ });
+        percent_report($data->{'owner_bounce_responsibility'}, $emails, $cutoff, "outgoing emails (owner)", undef, sub { @_ });
     }
-    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails", $data->{'total_discarded'});
-    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks");
+    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails", $data->{'total_discarded'}, \&SpamReport::Annotate::user);
+    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks", undef, \&SpamReport::Annotate::user);
 }
 
 my $hisource = qr/$RE{'spam'}{'hi_source'}/;
@@ -530,7 +531,7 @@ sub analyze_user_indicators {
     for (keys %{$data->{'responsibility'}}) {
         $users{$_} = undef if $emails && $data->{'responsibility'}{$_} / $emails > $cutoff;
     }
-    for (keys %{$data->{'bounce_responsibiltiy'}}) {
+    for (keys %{$data->{'bounce_responsibility'}}) {
         $users{$_} = undef if $bounces && $data->{'bounce_responsibility'}{$_} / $bounces > $cutoff;
     }
     for (values %{$data->{'mail_ids'}}) {
@@ -1943,7 +1944,7 @@ sub parse_queued_mail_data {
 
         for (@{$h_ref->{'recipients'}}) {
             if ( $_ =~ m/@(.*)$/ ) {
-                $data->{'recipient_domains'}{$1}++;
+                $h_ref->{'recipient_domains'}{$1}++;
                 if (exists $data->{'domain2user'}{$1}) {
                     $h_ref->{'recipient_users'}{$data->{'domain2user'}{$1}}++
                 }
@@ -2016,6 +2017,7 @@ sub parse_exim_mainlog {
                 $data->{'domain_responsibility'}{$1}++;
                 $data->{'mailbox_responsibility'}{$to[0]}++;
                 $data->{'bounce_responsibility'}{$user}++;
+                $data->{'owner_bounce_responsibility'}{$user}++ if exists $data->{'owner2user'}{$user};
                 $data->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
             }
@@ -2749,7 +2751,7 @@ sub main {
            . "This run will take much longer than normal$NULL\n"
             unless $loadedcron;
     }
-    DumpFile($OPTS{'dump'}.".cron") if $loadedcron && $OPTS{'dump'};
+    DumpFile($OPTS{'dump'}.".cron", $data) if $loadedcron && $OPTS{'dump'};
 
     if ($OPTS{'load'} or $OPTS{'latest'}) {
         SpamReport::Data::load($OPTS{'load'}) if $OPTS{'load'};
