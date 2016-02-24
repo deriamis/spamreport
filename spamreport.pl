@@ -299,6 +299,16 @@ sub script {
     }
 }
 
+sub owner {
+    my ($user, $ownerkey, $resoldkey) = @_;
+    my $u = $user;
+    my %resolds = map { ($_, $data->{$resoldkey}{$_}) } @{$data->{'owner2user'}{$u}};
+    for (grep { defined $_ && $resolds{$_} } (sort { $resolds{$b} <=> $resolds{$a} } keys %resolds)[0..2]) {
+        $user .= sprintf(" $CYAN%s$NULL:%.1f%%", $_, 100*$resolds{$_}/$data->{$ownerkey}{$u})
+    }
+    $user
+}
+
 sub user {
     my ($user) = @_;
     my $u = $user;
@@ -514,8 +524,14 @@ sub print_responsibility_results {
 
     if (5 < keys(%{$data->{'owner_responsibility'}})) {
         # 5 to ignore random bad users on shared servers
-        percent_report($data->{'owner_responsibility'}, $bounces, $cutoff, "bouncebacks (owner)", undef, sub { @_ });
-        percent_report($data->{'owner_bounce_responsibility'}, $emails, $cutoff, "outgoing emails (owner)", undef, sub { @_ });
+        percent_report($data->{'owner_responsibility'}, $bounces, $cutoff,
+            "bouncebacks (owner)", undef, sub {
+                SpamReport::Annotate::owner(@_, "owner_responsibility", "responsibility")
+        });
+        percent_report($data->{'owner_bounce_responsibility'}, $emails, $cutoff,
+            "outgoing emails (owner)", undef, sub {
+                SpamReport::Annotate::owner(@_, "owner_bounce_responsibility", "bounce_responsibility")
+        });
     }
     percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails", $data->{'total_discarded'}, \&SpamReport::Annotate::user);
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks", undef, \&SpamReport::Annotate::user);
