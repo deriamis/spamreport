@@ -2413,7 +2413,6 @@ sub find_dovecot_logins {
             $in_zone->[0] = 0;
             return
         }
-        next unless $_ =~ $data->{'OPTS'}{'dovecot_days'};
         if ( /Login: user=<(?!__cpanel)(\S+?)>/ ) {
             my $login = $1;
             $data->{'logins'}{$login}{'total_logins'}++;
