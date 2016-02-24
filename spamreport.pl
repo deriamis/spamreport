@@ -719,9 +719,32 @@ my %root_tests = (
     who => sub { 1 },
     path => sub { 1 },
 );
+my %reseller_tests = do {
+    my %resolds;
+    (
+        set_resolds => sub { %resolds = (); $resolds{$_} = 1 for @_ },
+        bounce_recipient => sub {
+            for (keys %{$_[0]->{'recipient_users'}}) {
+                return 1 if exists $resolds{$_}
+            }
+            return
+        },
+        bounce_source => sub {
+            for (keys %{$_[0]->{'source'}}) {
+                return 1 if exists $resolds{$_}
+            }
+            return
+        },
+        who => sub { exists $resolds{$_[0]->{'who'}} },
+        path => sub {
+            return unless $_[0] =~ m,^/[^/]+/([^/]+)/,;
+            return exists $resolds{$1}
+        }
+    )
+};
 
 sub analyze_user_results {
-    my ($user) = @_;
+    my ($user, $isreseller) = @_;
     my ($sent, $bounce, $queued, $boxtrapper) = (0, 0, 0);
     my %sent;
     my %bounce;
@@ -733,6 +756,10 @@ sub analyze_user_results {
     my %subject;
     my $tests = \%user_tests;
     $tests = \%root_tests if $user eq 'root';
+    if ($isreseller) {
+        $tests = \%reseller_tests;
+        $tests->{'set_resolds'}(@{$data->{'owner2user'}{$user}});
+    }
 
     my %dirs; suppressed_scriptdirs(\%dirs);
 
@@ -851,18 +878,34 @@ BOX
 }
 
 sub user_hour_report {
-    my ($user) = @_;
+    my ($user, $isreseller) = @_;
     return unless $data->{'OPTS'}{'hourly_report'};
     my $r = "----------------------------------------\n\n";
-    for (sort keys %{$data->{'hourly_volume'}{$user}}) {
-        $r .= "$_: " . commify($data->{'hourly_volume'}{$user}{$_}) . "\n"
+    my $volumes;
+    if ($user eq 'root') {
+        for my $u (keys %{$data->{'hourly_volume'}}) {
+            for (keys %{$data->{'hourly_volume'}{$u}}) {
+                $volumes->{$_} += $data->{'hourly_volume'}{$u}{$_}
+            }
+        }
+    }
+    elsif ($isreseller) {
+        for my $resold ($user, @{$data->{'owner2user'}{$user}}) {
+            for (keys %{$data->{'hourly_volume'}{$resold}}) {
+                $volumes->{$_} += $data->{'hourly_volume'}{$resold}{$_}
+            }
+        }
+    }
+    else { $volumes = $data->{'hourly_volume'}{$user} }
+    for (sort keys %$volumes) {
+        $r .= "$_: " . commify($volumes->{$_}) . "\n"
     }
     $r .= "\n";
     $r
 }
 
 sub print_user_results {
-    my ($user) = @_;
+    my ($user, $isreseller) = @_;
     my $u = $data->{'suspects'}{'users'}{$user}
         or die "No information about $user";
 
@@ -882,7 +925,7 @@ Reference: spamreport
    Server: $hostname
      User: $user
 
-@{[user_hour_report($user)]}----------------------------------------
+@{[user_hour_report($user, $isreseller)]}----------------------------------------
 
 User sent approximately @{[commify($u->{'sent'})]} messages to @{[commify($u->{'recipients'})]} unique recipients.
 There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addresses'})]} unique addresses, @{[sprintf "%.2f%%", 100*$u->{'bounce'}/$total]} of the emails.
@@ -2321,6 +2364,7 @@ sub check_options {
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
         'hourly'      => \$OPTS{'hourly_report'},
+        'reseller|r'  => \$OPTS{'reseller'},
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
@@ -2731,8 +2775,8 @@ sub main {
     if (!$OPTS{'update'}) {
         SpamReport::Output::analyze_results();
         if ($OPTS{'user'}) {
-            SpamReport::Output::analyze_user_results($OPTS{'user'});
-            SpamReport::Output::print_user_results($OPTS{'user'});
+            SpamReport::Output::analyze_user_results($OPTS{'user'}, $OPTS{'reseller'});
+            SpamReport::Output::print_user_results($OPTS{'user'}, $OPTS{'reseller'});
         } else {
             SpamReport::Output::print_results() unless $OPTS{'cron'};
         }
@@ -2774,6 +2818,7 @@ Options:
 
     -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
                 | --hourly              : add an emails/hour section to --user output
+    -r          | --reseller            : report on all of user's resold accounts
 
                 | --cron                : gather crondata and save it, without analysis or output
                 | --update              : gather fulldata and save it.  uses crondata if fresh
