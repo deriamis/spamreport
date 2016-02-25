@@ -2683,7 +2683,7 @@ sub check_options {
     for ($OPTS{'dump'}) {
         my $d;
         if (-d $_) { $d = $_ }
-        elsif (m,^(/.*)/[^/+]$, && -d $1) { $d = $1 }
+        elsif (m,^(/.*)/[^/]+$, && -d $1) { $d = $1 }
         elsif ($_ !~ m,/,) { $d = '.' }
         else { die "Directory doesn't exist for --dump target: $_" }
 
