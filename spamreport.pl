@@ -643,20 +643,25 @@ sub percent_report {
 sub print_responsibility_results {
     my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
     my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
+    my ($excl, $exclbounce);
+    $excl = sprintf(" (excl. %s filtered emails)", commify($data->{'filtered_outgoing'}))
+        if $data->{'filtered_outgoing'};
+    $exclbounce = sprintf(" (excl. %s filtered bounces)", commify($data->{'filtered_bounce'}))
+        if $data->{'filtered_bounce'};
 
     if (5 < keys(%{$data->{'owner_responsibility'}})) {
         # 5 to ignore random bad users on shared servers
         percent_report($data->{'owner_responsibility'}, $bounces, $cutoff,
-            "bouncebacks (owner)", undef, sub {
+            "bouncebacks (owner)$exclbounce", undef, sub {
                 SpamReport::Annotate::owner(@_, "owner_responsibility", "responsibility")
         });
         percent_report($data->{'owner_bounce_responsibility'}, $emails, $cutoff,
-            "outgoing emails (owner)", undef, sub {
+            "outgoing emails (owner)$excl", undef, sub {
                 SpamReport::Annotate::owner(@_, "owner_bounce_responsibility", "bounce_responsibility")
         });
     }
-    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails", $data->{'total_discarded'}, \&SpamReport::Annotate::user);
-    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks", undef, \&SpamReport::Annotate::user);
+    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails$excl", $data->{'total_discarded'}, \&SpamReport::Annotate::user);
+    percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks$exclbounce", undef, \&SpamReport::Annotate::user);
 }
 
 my $hisource = qr/$RE{'spam'}{'hi_source'}/;
@@ -2530,6 +2535,8 @@ sub check_options {
         'uncached'    => \$OPTS{'uncached'},
         'cron'        => \$OPTS{'cron'},
         'update'      => \$OPTS{'update'},
+        'without|w=s' => \$OPTS{'without'},
+        'full|f'      => \$OPTS{'full'},
         'load=s'      => \$OPTS{'load'},
         'loadcron=s'  => \$OPTS{'loadcron'},
         'user|u=s'    => \$OPTS{'user'},
@@ -2626,6 +2633,8 @@ sub check_options {
     }
     $OPTS{'dovecot_postdays'} = \%dovecotpost;
     $OPTS{'exim_postdays'} = \%eximpost;
+
+    $OPTS{'full'} = 1 if $OPTS{'user'};
 
     return $result;
 }
@@ -2873,7 +2882,50 @@ sub setup_cpanel {
 
     $data->{$_} = $new->{$_} for keys %$new;
 
+    for (keys %{$data->{'user2domain'}}) {
+        my $ticket = SpamReport::Annotate::_ticket($_);
+        $data->{'ticketed_users'}{$_} = $ticket if $ticket;
+    }
+
     1;
+}
+
+sub user {
+    my ($user) = @_;
+    if (exists $data->{'domain2user'}{$user}) {
+        print "Assuming you mean $data->{'domain2user'}{$user} by $user\n";
+        $user = $data->{'domain2user'}{$user};
+    }
+    die "No such user: $user" unless getpwnam($user);
+    $user
+}
+
+sub purge {
+    my %users = map { ($_, 1) } @_;
+    for (keys %{$data->{'mail_ids'}}) {
+        if (exists $users{$data->{'mail_ids'}{$_}{'who'}}) {
+            if ($data->{'mail_ids'}{$_}{'type'} eq 'bounce') {
+                $data->{'total_bounce'}--;
+                $data->{'filtered_bounce'}++;
+            } else {
+                $data->{'total_outgoing'}--;
+                $data->{'filtered_outgoing'}++;
+            }
+            delete $data->{'mail_ids'}{$_};
+        }
+    }
+    for (keys %users) {
+        delete $data->{'responsibility'}{$_};
+        delete $data->{'owner_responsibility'}{$_};
+        delete $data->{'bounce_responsibility'}{$_};
+        delete $data->{'owner_bounce_responsibility'}{$_};
+    }
+    for (keys %{$data->{'outscript'}}) {
+        delete $data->{'outscript'}{$_} if m,^/[^/]+/([^/]+)/, && exists $users{$1}
+    }
+    for (keys %{$data->{'scriptdirs'}}) {
+        delete $data->{'scriptdirs'}{$_} if m,^/[^/]+/([^/]+)/, && exists $users{$1}
+    }
 }
 
 sub main {
@@ -2883,6 +2935,13 @@ sub main {
     STDERR->autoflush(1);
 
     check_options() or pod2usage(2);
+
+    if (defined $OPTS{'user'} && $OPTS{'user'} ne 'root') {
+        $OPTS{'user'} = user($OPTS{'user'})
+    }
+    if (defined $OPTS{'without'}) {
+        $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
+    }
 
     unless ($OPTS{'cron'} || $OPTS{'scripts'}) {
         SpamReport::Tracking::Scripts::disable()
@@ -2916,16 +2975,6 @@ sub main {
         $data->{'OPTS'}{$_} = $OPTS{$_}
     }
 
-    if (defined $OPTS{'user'} && $OPTS{'user'} ne 'root') {
-        if (exists $data->{'domain2user'}{$OPTS{'user'}}) {
-            print "Assuming you mean $data->{'domain2user'}{$OPTS{'user'}} by $OPTS{'user'}\n";
-            $OPTS{'user'} = $data->{'domain2user'}{$OPTS{'user'}};
-        }
-        if (!getpwnam($OPTS{'user'})) {
-            die "No such user: $OPTS{'user'}"
-        }
-    }
-
     if ($OPTS{'cron'}) {
         $OPTS{'datelimit'} = 'not today';
         for my $section ( @{ $OPTS{'run_sections'} } ) {
@@ -2950,12 +2999,13 @@ sub main {
         SpamReport::Data::savecron();
     }
     DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
-
-    #if ( $OPTS{'sections'} ) {
-    #    SpamReport::Output::email_search_results($data);
-    #}
-    #else {
     SpamReport::Data::save() unless $OPTS{'latest'};
+
+    my @to_purge;
+    push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
+    push @to_purge, keys %{$data->{'ticketed_users'}} unless $OPTS{'full'};
+    purge(@to_purge) if @to_purge;
+
     if (!$OPTS{'update'}) {
         SpamReport::Output::analyze_results();
         if ($OPTS{'user'}) {
@@ -3004,6 +3054,9 @@ Options:
     -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
                 | --hourly              : add an emails/hour section to --user output
     -r          | --reseller            : report on all of user's resold accounts
+
+    -w          | --without=<u1 u2 ..>  : remove space-separated users' email before reporting
+    -f          | --full                : don't remove ticketed users' email before reporting
 
                 | --cron                : gather crondata and save it, without analysis or output
                 | --update              : gather fulldata and save it.  uses crondata if fresh
