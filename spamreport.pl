@@ -1,6 +1,30 @@
 #!/usr/bin/perl
 
 BEGIN {
+package SpamReport::GeoIP;
+use Geo::IPfree;
+use IP::Country::Fast;
+
+my ($geo, $ipc);
+
+sub init {
+    $geo = Geo::IPfree->new;
+    $geo->Faster;
+    $ipc = IP::Country::Fast->new;
+}
+
+sub lookup {
+    my ($ip) = @_;
+    return $ipc->inet_atocc($ip) || ($geo->LookUp($ip))[0]
+}
+
+1;
+} # end module SpamReport::GeoIP
+BEGIN {
+$INC{'SpamReport/GeoIP.pm'} = '/dev/null';
+}
+
+BEGIN {
 package SpamReport::Data;
 use common::sense;
 use Exporter;
@@ -481,7 +505,7 @@ package SpamReport::Annotate;
 use common::sense;
 use SpamReport::Data;
 
-use vars qw/$VERSION/;
+use vars qw/$VERSION %embargo/;
 $VERSION = '2016021901';
 
 use SpamReport::ANSIColor;
@@ -557,6 +581,22 @@ sub user {
     #    }
     #}
     $user
+}
+
+%embargo = qw(
+    IR IRAN
+    KP NKOREA
+    SD SUDAN
+    SY SYRIA
+);
+sub country {
+    my ($code) = @_;
+    if (exists $embargo{$code}) {
+        "$RED$embargo{$code}$NULL"
+    }
+    else {
+        "$CYAN$code$NULL"
+    }
 }
 
 sub sample_urls {
@@ -644,8 +684,9 @@ sub analyze_results {
     SpamReport::Exim::analyze_queued_mail_data();
     #SpamReport::Exim::analyze_num_recipients();
     analyze_mailboxes();
-    SpamReport::Maillog::analyze_logins();
+    #SpamReport::Maillog::analyze_logins();
     analyze_user_indicators();
+    analyze_auth_mismatch();
 
     1;
 }
@@ -656,6 +697,7 @@ sub print_results {
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
     #print_login_results() if exists $data->{'suspects'}{'logins'};
+    print_auth_mismatch() if $data->{'auth_mismatch'};
 
     print "\n";
     1;
@@ -735,6 +777,63 @@ sub print_responsibility_results {
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks$exclbounce", undef, \&SpamReport::Annotate::user);
 }
 
+sub analyze_auth_mismatch {
+    for (values %{$data->{'mail_ids'}}) {
+        if (exists $_->{'ip'}) {
+            $data->{'auth_mismatch'}{$_->{'sender'}}{'count'}++;
+            $data->{'auth_mismatch'}{$_->{'sender'}}{'ip'}{$_->{'ip'}}++;
+            $data->{'auth_mismatch'}{$_->{'sender'}}{'who'} = $_->{'who'};
+            $data->{'auth_mismatch'}{$_->{'sender'}}{'country'}{SpamReport::GeoIP::lookup($_->{'ip'})}{$_->{'ip'}}++;
+            $data->{'auth_mismatch'}{$_->{'sender'}}{'auth'}{$_->{'auth_sender'}}++
+        }
+    }
+}
+
+sub top_country {
+    my ($countries) = @_;
+    my @countries = grep { defined $_ }
+        (sort { scalar(keys(%{$countries->{$b}})) <=>
+                scalar(keys(%{$countries->{$a}})) } keys %$countries)[0..2];
+    for my $embargo (grep { exists $SpamReport::Annotate::embargo{$_} } keys %$countries) {
+        push @countries, $_ unless grep { $embargo eq $_ } @countries
+    }
+    join " ", map { SpamReport::Annotate::country($_) .  ":" . scalar(keys(%{$countries->{$_}})) } @countries;
+}
+
+sub top_auth {
+    my ($auths) = @_;
+    my @auths = grep { defined $_ } (sort { $auths->{$b} <=> $auths->{$a} } keys %$auths)[0..2];
+    join " ", map { "$GREEN$_$NULL:$auths->{$_}" } @auths;
+}
+
+sub print_auth_mismatch {
+    print "\n${GREEN}Authorization$NULL vs. sender domain mismatches\n";
+    my @widths = (0, 0, 0, 0);
+    for (keys %{$data->{'auth_mismatch'}}) {
+        my ($s, $i, $c, $u) = map { length $_ } (
+            $_,
+            scalar(keys(%{$data->{'auth_mismatch'}{$_}{'ip'}})),
+            $data->{'auth_mismatch'}{$_}{'count'},
+            $data->{'auth_mismatch'}{$_}{'who'}
+        );
+        $widths[0] = $c if $c > $widths[0];
+        $widths[1] = $i if $i > $widths[1];
+        $widths[2] = $u if $u > $widths[2];
+        $widths[3] = $s if $s > $widths[3];
+    }
+    for (sort { $data->{'auth_mismatch'}{$b}{'count'} <=>
+                $data->{'auth_mismatch'}{$a}{'count'} }
+            keys %{$data->{'auth_mismatch'}}) {
+        printf "%$widths[0]d %$widths[1]d %$widths[2]s %s %s %s\n",
+            $data->{'auth_mismatch'}{$_}{'count'},
+            scalar(keys(%{$data->{'auth_mismatch'}{$_}{'ip'}})),
+            $data->{'auth_mismatch'}{$_}{'who'},
+            $_,
+            top_country($data->{'auth_mismatch'}{$_}{'country'}),
+            top_auth($data->{'auth_mismatch'}{$_}{'auth'})
+    }
+}
+
 my $hisource = qr/$RE{'spam'}{'hi_source'}/;
 my $spamtld  = qr/$RE{'spam'}{'spammy_tld'}/;
 my $hidest   = qr/$RE{'spam'}{'hi_destination'}/;
@@ -753,10 +852,6 @@ sub analyze_user_indicators {
         next unless exists $users{$user};
         next if $_->{'type'} eq 'bounce';
         $users{$user}{'total'}++;
-        if (exists $_->{'auth_sender_domain'} && exists $_->{'sender_domain'} &&
-                lc($_->{'auth_sender_domain'}) ne lc($_->{'sender_domain'})) {
-            $users{$user}{'mismatched_domain'}++;
-        }
         if ($_->{'subject'} =~ /^Account Details for |^Activate user account|^Welcome to/) {
             $users{$user}{'botmail'}++
         }
@@ -817,11 +912,6 @@ sub analyze_user_indicators {
         for ($users{$_}{'boxtrapper'} / $users{$_}{'total'}) {
             if ($_ > 0.5) {
                 $data->{'indicators'}{$_}{sprintf("boxtrapper:%.1f%%", $_*100)}++;
-            }
-        }
-        for ($users{$_}{'mismatched_domain'} / $users{$_}{'total'}) {
-            if ($_ > 0.2) {
-                $data->{'indicators'}{$_}{sprintf("auth_mismatch:%.1f%%", $_*100)}++
             }
         }
         if ($data->{'discarded_users'}{$_}) {
@@ -2306,7 +2396,19 @@ sub parse_exim_mainlog {
             $data->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
             $data->{'mail_ids'}{$mailid}{'who'} = who($data->{'mail_ids'}{$mailid});
 
-            if (!exists($data->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
+            # this first test is a little unusual
+            # 1. it prevents the following tests from deleting the email
+            # 2. it assigns an IP, which is also the unique trigger for auth_mismatch
+            #
+            if (exists $data->{'mail_ids'}{$mailid}{'sender_domain'} &&
+                exists $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} &&
+                lc($data->{'mail_ids'}{$mailid}{'sender_domain'}) ne
+                lc($data->{'mail_ids'}{$mailid}{'auth_sender_domain'}) && 
+                $line =~ / A=dovecot/ &&
+                $line =~ /\[([^\s\]]+)\]:\d+ I=/) {
+                $data->{'mail_ids'}{$mailid}{'ip'} = $1;
+            }
+            elsif (!exists($data->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
                 && !exists($data->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
                 && !exists($data->{'domain2user'}{lc($from)})  # sender domain is remote
                 && !grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
@@ -3105,12 +3207,14 @@ sub main {
     DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
     SpamReport::Data::save() unless $OPTS{'latest'};
 
-    my @to_purge;
-    push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
-    push @to_purge, SpamReport::Tracking::Suspensions::ticketed_users() unless $OPTS{'full'};
-    purge(@to_purge) if @to_purge;
-
     if (!$OPTS{'update'}) {
+        my @to_purge;
+        push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
+        push @to_purge, SpamReport::Tracking::Suspensions::ticketed_users() unless $OPTS{'full'};
+        purge(@to_purge) if @to_purge;
+
+        SpamReport::GeoIP::init();
+
         SpamReport::Output::analyze_results();
         if ($OPTS{'user'}) {
             SpamReport::Output::analyze_user_results($OPTS{'user'}, $OPTS{'reseller'});
@@ -3210,7 +3314,6 @@ Indicator key:
                          e.g. Account Details for ...
 
     boxtrapper:        | >50% of email has subjects suggesting boxtrapper
-    auth_mismatch:     | >20% of email has mismatched auth_sender/sender
 
 =head1 FILES
 
