@@ -684,7 +684,7 @@ sub analyze_results {
     SpamReport::Exim::analyze_queued_mail_data();
     #SpamReport::Exim::analyze_num_recipients();
     analyze_mailboxes();
-    #SpamReport::Maillog::analyze_logins();
+    SpamReport::Maillog::analyze_logins();
     analyze_user_indicators();
     analyze_auth_mismatch();
 
@@ -696,7 +696,7 @@ sub print_results {
     #print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
-    #print_login_results() if exists $data->{'suspects'}{'logins'};
+    print_login_results() if exists $data->{'suspects'}{'logins'};
     print_auth_mismatch() if $data->{'auth_mismatch'};
 
     print "\n";
@@ -995,21 +995,24 @@ sub print_script_results {
 }
 
 sub print_login_results {
-    my @width = (0, 0);
+    print "\nSuspect logins\n";
+    my @width = (0, 0, 0);
     my %h = %{$data->{'suspects'}{'logins'}};
-    for (values %h) {
-        my ($lo, $pr) = (length($_->{'total_logins'}), length(scalar(keys %{$_->{'logins_from'}})));
+    for (keys %h) {
+        my ($lo, $pr) = map { length($_) } ($h{$_}{'total_logins'}, scalar(keys %{$h{$_}{'logins_from'}}));
+        my $wh = /\@(.*)/ ? length($h{$_}{'who'} = $data->{'domain2user'}{$1}) : 0;
         $width[0] = $lo if $width[0] < $lo;
         $width[1] = $pr if $width[1] < $pr;
+        $width[2] = $wh if $width[2] < $wh;
     }
     for my $login (reverse sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
         my @ips = sort { $h{$login}{'logins_from'}{$b} <=> $h{$login}{'logins_from'}{$a} } keys %{$h{$login}{'logins_from'}};
         my @counts = map { $h{$login}{'logins_from'}{$_} } @ips;
-        printf "%$width[0]d %$width[1]d $login   %s(%d) %s(%d) %s(%d)\n",
-            $h{$login}{'total_logins'}, scalar(keys %{$h{$login}{'logins_from'}}),
+        printf "%$width[0]d %$width[2]s %$width[1]d $login   %s(%d) %s(%d) %s(%d)\n",
+            $h{$login}{'total_logins'}, $h{$login}{'who'}, scalar(keys %{$h{$login}{'logins_from'}}),
             "$MAGENTA$ips[0]$NULL", $counts[0],
             "$YELLOW$ips[1]$NULL", $counts[1],
-            "$CYAN$ips[2]$NULL", $counts[2]
+            "$CYAN$ips[2]$NULL", $counts[2]# join(" ", map { $ips[$_].':'.$counts[$_] } 3..$#ips)
     }
 }
 
@@ -2646,11 +2649,11 @@ sub find_dovecot_logins {
     }
 }
 
-# implemented: SUSP.LOG1 account suspect if login IPs have >5 unique leading 2 octets
+# implemented: SUSP.LOG1 account suspect if login IPs have >10 unique leading 2 octets
 sub analyze_logins {
     for my $login (keys %{$data->{'logins'}}) {
         my %prefix = map { /^(\d+\.\d+\.)/ or die $_; ($1, 1) } keys %{$data->{'logins'}{$login}{'logins_from'}};
-        next unless scalar(keys %prefix) > 5;
+        next unless scalar(keys %prefix) > 10;
         $data->{'suspects'}{'logins'}{$login} = $data->{'logins'}{$login};
     }
 }
@@ -2720,7 +2723,7 @@ my %OPTS = (
     'hourly_report' => undef,
 );
 
-my @OPTS_OVERRIDE = qw(hourly_report r_cutoff);
+my @OPTS_OVERRIDE = qw(hourly_report r_cutoff reseller without full);
 
 my $hostname = hostname_long();
 my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
