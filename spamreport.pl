@@ -36,7 +36,7 @@ sub loadcron {
     }
     else {
         rotatecron();
-        $loadcronfail = "file is tool old: $path ($date)";
+        $loadcronfail = "file is too old: $path ($date)";
     }
     return;
 }
@@ -110,6 +110,14 @@ sub rotate {
 }
 
 sub rotatecron { rotate($cronpath) }
+
+sub disable {
+    *{"SpamReport::Data::load"}
+    = *{"SpamReport::Data::save"}
+    = *{"SpamReport::Data::retrievecron"}
+    = *{"SpamReport::Data::savecron"} = sub { };
+    *{"SpamReport::Data::exitsavecron"} = sub { exit };
+}
 
 1;
 } # end module SpamReport::Data
@@ -576,7 +584,7 @@ sub print_results {
     #print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
-    print_login_results() if exists $data->{'suspects'}{'logins'};
+    #print_login_results() if exists $data->{'suspects'}{'logins'};
 
     print "\n";
     1;
@@ -833,9 +841,9 @@ sub print_login_results {
         my @counts = map { $h{$login}{'logins_from'}{$_} } @ips;
         printf "%$width[0]d %$width[1]d $login   %s(%d) %s(%d) %s(%d)\n",
             $h{$login}{'total_logins'}, scalar(keys %{$h{$login}{'logins_from'}}),
-            color(35, $ips[0]), $counts[0],
-            color(33, $ips[1]), $counts[1],
-            color(36, $ips[2]), $counts[2]
+            "$MAGENTA$ips[0]$NULL", $counts[0],
+            "$YELLOW$ips[1]$NULL", $counts[1],
+            "$CYAN$ips[2]$NULL", $counts[2]
     }
 }
 
@@ -1111,7 +1119,7 @@ Emails found in queue:
 ----------------------
 User: @{[commify($u->{'queued'})]}, Total: @{[commify($data->{'total_queue'})]}
 
-This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}))]} of the emails found.
+This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.
 
 
 REPORT
@@ -2519,6 +2527,7 @@ sub check_options {
         'create|c=s@' => \$OPTS{'search_create'},
         'dbs!'        => \$OPTS{'check_dbs'},
         'read|r=i'    => \$OPTS{'read_lines'},
+        'uncached'    => \$OPTS{'uncached'},
         'cron'        => \$OPTS{'cron'},
         'update'      => \$OPTS{'update'},
         'load=s'      => \$OPTS{'load'},
@@ -2592,7 +2601,7 @@ sub check_options {
     if (($OPTS{'latest'} or $OPTS{'load'}) and $OPTS{'update'}) {
         die "--latest/--load is incompatible with --update (we wouldn't have any new data to save)"
     }
-    $OPTS{'latest'} = 1 if $OPTS{'user'} and !$OPTS{'load'};
+    $OPTS{'latest'} = 1 if $OPTS{'user'} and !$OPTS{'load'} and !$OPTS{'uncached'};
 
 
     if ($OPTS{'latest'} or $OPTS{'load'}) {
@@ -2601,7 +2610,7 @@ sub check_options {
 
 
     my (%dovecot, %exim);
-    for (my $i = $OPTS{'end_time'}; $i > $OPTS{'start_time'}; $i -= 3600 * 24) {
+    for (my $i = $OPTS{'end_time'}; $i >= $OPTS{'start_time'}; $i -= 3600 * 24) {
         $exim{POSIX::strftime("%F", CORE::localtime($i))}++;
         $dovecot{POSIX::strftime("%b %d", CORE::localtime($i))}++;
     }
@@ -2877,6 +2886,9 @@ sub main {
 
     unless ($OPTS{'cron'} || $OPTS{'scripts'}) {
         SpamReport::Tracking::Scripts::disable()
+    }
+    if ($OPTS{'uncached'}) {
+        SpamReport::Data::disable();
     }
 
     SpamReport::Tracking::Scripts::load();
