@@ -796,7 +796,7 @@ sub suppressed_scriptdirs {
     DIR: for my $dir (keys %{$data->{'scriptdirs'}}) {
         for (keys %{$data->{'outscript'}}) {
             next DIR if $_ =~ m,^$dir/*[^/]+$,
-                && $data->{'outscript'}{$_}/$data->{'scriptdirs'}{$dir} > 0.9
+                # && $data->{'outscript'}{$_}/$data->{'scriptdirs'}{$dir} > 0.9
         }
         $h->{$dir} = $data->{'scriptdirs'}{$dir};
     }
