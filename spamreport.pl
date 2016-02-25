@@ -130,17 +130,18 @@ package SpamReport::Tracking::Scripts;
 use YAML::Syck qw(DumpFile LoadFile);
 use vars qw($VERSION);
 use File::Which qw ( which );
+use Time::Local;
 use common::sense;
 
 $VERSION = '2016022401';
 my $md5sum = which('md5sum');
 my $trackpath = "/opt/hgmods/logs/spamscripts.dat";
+my $midnight = timelocal(0, 0, 0, (localtime)[3..8]);
 
 my $tracking;
-my $attempts;
 
 sub load { eval { $tracking = LoadFile($trackpath) } }
-sub save { DumpFile($trackpath, $tracking) }
+sub save { if ($tracking) { prune(); DumpFile($trackpath, $tracking) } }
 
 my %cache;
 
@@ -152,12 +153,13 @@ sub disable {
     = *{"SpamReport::Tracking::Scripts::script"} = sub { }
 }
 
+my $time = time();
 sub script {
     my ($path, $ip) = @_;
     my $md5 = md5sum($path) || return;
     if ($md5 =~ /^[a-f0-9]{32}$/i) {
-        $tracking->{$md5}{ips}{$ip}++;
-        $tracking->{$md5}{paths}{$path}++;
+        $tracking->{$md5}{$midnight}{'ips'}{$ip}++;
+        $tracking->{$md5}{$midnight}{'paths'}{$path}++;
     }
 }
 
@@ -171,6 +173,17 @@ sub md5sum {
     $md5 =~ s/ .*//;
     chomp $md5;
     $md5
+}
+
+sub prune {
+    my $cutoff = $midnight - (180 * 3600 * 24);  # 180 days ago
+    for my $md5 (keys %$tracking) {
+        for (keys %{$tracking->{$md5}}) {
+            if ($_ < $cutoff) {
+                delete $tracking->{$md5}{$_}
+            }
+        }
+    }
 }
 
 # /usr/bin/time perl -MDigest::MD5 -le '$m = Digest::MD5->new; open my $f, "<", "bigfile"; $m->addfile($f); print $m->hexdigest'
@@ -191,6 +204,72 @@ sub md5sum {
 } # end module SpamReport::Tracking::Scripts
 BEGIN {
 $INC{'SpamReport/Tracking/Scripts.pm'} = '/dev/null';
+}
+
+BEGIN {
+package SpamReport::Tracking::Suspensions;
+use vars qw($VERSION);
+use YAML::Syck qw(DumpFile LoadFile);
+use Time::Local;
+use common::sense;
+$VERSION = '2016022501';
+my $trackpath = '/opt/hgmods/logs/spamsuspensions.dat';
+my $abusepath = '/opt/eig_linux/var/suspended/';
+my $midnight = timelocal(0, 0, 0, (localtime)[3..8]);
+
+my $tracking;
+my %active;
+
+sub load { eval { $tracking = LoadFile($trackpath) } }
+sub save { if ($tracking) { prune(); DumpFile($trackpath, $tracking) } }
+
+sub track {
+    load();
+    opendir my $d, $abusepath or do { warn "Unable to open $abusepath : $!"; next };
+    while ($_ = readdir($d)) {
+        open my $f, '<', $abusepath.$_ or next;
+        my $ctime = (stat($f))[10];
+        chomp(my $ticket = <$f>);
+        close $f;
+        if ($ticket && $ctime) {
+            $tracking->{$_}{$ticket} = $ctime;
+            $active{$_} = $ticket;
+        }
+    }
+    close $d;
+    save();
+}
+
+sub ticket {
+    my ($user) = @_;
+    return $active{$user} ? ($active{$user}) : ()
+}
+
+sub ticketed_users {
+    return keys %active
+}
+
+# returns ( ticketid -> ctime ) hashref
+sub user_tickets {
+    my ($user) = @_;
+    return $tracking->{$user};
+}
+
+sub prune {
+    my $cutoff = $midnight - (180 * 3600 * 24);  # 180 days ago
+    for my $user (keys %$tracking) {
+        for (keys %{$tracking->{$user}}) {
+            if ($tracking->{$user}{$_} < $cutoff) {
+                delete $tracking->{$user}{$_}
+            }
+        }
+    }
+}
+
+1;
+} # end module SpamReport::Tracking::Suspensions
+BEGIN {
+$INC{'SpamReport/Tracking/Suspensions.pm'} = '/dev/null';
 }
 
 BEGIN {
@@ -434,7 +513,7 @@ sub owner {
 sub user {
     my ($user) = @_;
     my $u = $user;
-    for (_ticket($u)) {
+    for (SpamReport::Tracking::Suspensions::ticket($u)) {
         $user = "$RED$user $_$NULL"
     }
     if (exists $data->{'in_history'}{$u}) {
@@ -478,14 +557,6 @@ sub user {
     #    }
     #}
     $user
-}
-
-sub _ticket {
-    my $user = shift;
-    open my $f, '<', "/opt/eig_linux/var/suspended/$user" or return;
-    chomp(my $ticket = <$f>);
-    close $f;
-    $ticket ? $ticket : ();
 }
 
 sub sample_urls {
@@ -1043,6 +1114,43 @@ PHP Scripts:
 BOX
 }
 
+{
+    my $time = time();
+    sub ago {
+        my $delta = ($time - $_[0]) / (24 * 3600);
+        if ($delta > 1) {
+            sprintf "%.1f days", $delta
+        } else {
+            sprintf "%.1f hours", ($time - $_[0]) / 3600
+        }
+    }
+}
+
+sub user_ticket_report {
+    my ($user, $isreseller) = @_;
+    $isreseller = 1 if $user eq 'root';
+    my @tickets;
+    my $r = "----------------------------------------\n\n";
+    my @widths = (0, 0, 0);
+    for my $u (sort $user, @{$data->{'owner2user'}{$user}}) {
+        my $t = SpamReport::Tracking::Suspensions::user_tickets($u);
+        next unless $t;
+        push @tickets, map { [$u, $_, ago($t->{$_}) . " ago", $t->{$_}] } keys %$t;
+    }
+    for (@tickets) {
+        $widths[0] = length($_->[0]) if length($_->[0]) > $widths[0];
+        $widths[1] = length($_->[1]) if length($_->[1]) > $widths[1];
+        $widths[2] = length($_->[2]) if length($_->[2]) > $widths[2];
+    }
+    for (sort { $a->[3] <=> $b->[3] } @tickets) {
+        $r .= sprintf("%s$RED%$widths[1]s$NULL : %$widths[2]s : %s\n",
+                ($isreseller ? sprintf("%$widths[0]s : ", $_->[0]) : ''),
+                $_->[1], $_->[2], scalar(localtime($_->[3])))
+    }
+    $r .= "\n";
+    $r
+}
+
 sub user_hour_report {
     my ($user, $isreseller) = @_;
     return unless $data->{'OPTS'}{'hourly_report'};
@@ -1091,7 +1199,7 @@ Reference: spamreport
    Server: $hostname
      User: $user
 
-@{[user_hour_report($user, $isreseller)]}----------------------------------------
+@{[user_ticket_report($user, $isreseller)]}@{[user_hour_report($user, $isreseller)]}----------------------------------------
 
 User sent approximately @{[commify($u->{'sent'})]} messages to @{[commify($u->{'recipients'})]} unique recipients.
 There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addresses'})]} unique addresses, @{[sprintf "%.2f%%", 100*$u->{'bounce'}/$total]} of the emails.
@@ -2882,11 +2990,6 @@ sub setup_cpanel {
 
     $data->{$_} = $new->{$_} for keys %$new;
 
-    for (keys %{$data->{'user2domain'}}) {
-        my $ticket = SpamReport::Annotate::_ticket($_);
-        $data->{'ticketed_users'}{$_} = $ticket if $ticket;
-    }
-
     1;
 }
 
@@ -2951,6 +3054,7 @@ sub main {
     }
 
     SpamReport::Tracking::Scripts::load();
+    SpamReport::Tracking::Suspensions::track();
 
     unless ($OPTS{'latest'} or $OPTS{'cron'}) {
         SpamReport::Data::loadcron($OPTS{'loadcron'});
@@ -3003,7 +3107,7 @@ sub main {
 
     my @to_purge;
     push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
-    push @to_purge, keys %{$data->{'ticketed_users'}} unless $OPTS{'full'};
+    push @to_purge, SpamReport::Tracking::Suspensions::ticketed_users() unless $OPTS{'full'};
     purge(@to_purge) if @to_purge;
 
     if (!$OPTS{'update'}) {
