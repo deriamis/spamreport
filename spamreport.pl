@@ -696,7 +696,7 @@ sub print_results {
     #print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
-    print_login_results() if exists $data->{'suspects'}{'logins'};
+    #print_login_results() if exists $data->{'suspects'}{'logins'};
     print_auth_mismatch() if $data->{'auth_mismatch'};
 
     print "\n";
@@ -997,7 +997,7 @@ sub print_script_results {
 sub print_login_results {
     print "\nSuspect logins\n";
     my @width = (0, 0, 0);
-    my %h = %{$data->{'suspects'}{'logins'}};
+    my %h; $h{$_} = $data->{'logins'}{$_} for grep { $data->{'logins'}{$_}{'suspect'} } keys %{$data->{'logins'}};
     for (keys %h) {
         my ($lo, $pr) = map { length($_) } ($h{$_}{'total_logins'}, scalar(keys %{$h{$_}{'logins_from'}}));
         my $wh = /\@(.*)/ ? length($h{$_}{'who'} = $data->{'domain2user'}{$1}) : 0;
@@ -1008,11 +1008,12 @@ sub print_login_results {
     for my $login (reverse sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
         my @ips = sort { $h{$login}{'logins_from'}{$b} <=> $h{$login}{'logins_from'}{$a} } keys %{$h{$login}{'logins_from'}};
         my @counts = map { $h{$login}{'logins_from'}{$_} } @ips;
-        printf "%$width[0]d %$width[2]s %$width[1]d $login   %s(%d) %s(%d) %s(%d)\n",
+        printf "%$width[0]d %$width[2]s %$width[1]d $login   %s(%d) %s(%d) %s(%d) :: %s\n",
             $h{$login}{'total_logins'}, $h{$login}{'who'}, scalar(keys %{$h{$login}{'logins_from'}}),
             "$MAGENTA$ips[0]$NULL", $counts[0],
             "$YELLOW$ips[1]$NULL", $counts[1],
-            "$CYAN$ips[2]$NULL", $counts[2]# join(" ", map { $ips[$_].':'.$counts[$_] } 3..$#ips)
+            "$GREEN$ips[2]$NULL", $counts[2], # join(" ", map { $ips[$_].':'.$counts[$_] } 3..$#ips)
+            top_country($h{$login}{'country'})
     }
 }
 
@@ -1153,6 +1154,7 @@ sub analyze_user_results {
 }
 
 # modified http://www.perlmonks.org/?node_id=653
+# if given a hashref, commify the number of keys
 sub commify {
     my $input = shift;
     $input = scalar(keys %$input) if ref $input eq 'HASH';
@@ -2402,6 +2404,7 @@ sub parse_exim_mainlog {
             # this first test is a little unusual
             # 1. it prevents the following tests from deleting the email
             # 2. it assigns an IP, which is also the unique trigger for auth_mismatch
+            # 3. it prevents the responsibility tracking in the final 'else'
             #
             if (exists $data->{'mail_ids'}{$mailid}{'sender_domain'} &&
                 exists $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} &&
@@ -2410,21 +2413,21 @@ sub parse_exim_mainlog {
                 $line =~ / A=dovecot/ &&
                 $line =~ /\[([^\s\]]+)\]:\d+ I=/) {
                 $data->{'mail_ids'}{$mailid}{'ip'} = $1;
-            }
-            elsif (!exists($data->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
-                && !exists($data->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
-                && !exists($data->{'domain2user'}{lc($from)})  # sender domain is remote
-                && !grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
-                # then this is an incoming email and we don't care about it
-                delete $data->{'mail_ids'}{$mailid};
-            } elsif (@{$data->{'mail_ids'}{$mailid}{'recipients'}} ==
-                   grep { $_ =~ /\@\Q$data->{'mail_ids'}{$mailid}{'sender_domain'}\E$/i }
-                   @{$data->{'mail_ids'}{$mailid}{'recipients'}}) {
-                # if the number of recipients is the same as the number of
-                # recipients that are to the sender domain, which is local,
-                # then we don't care.  people can spam themselves all they
-                # want.
-                delete $data->{'mail_ids'}{$mailid};
+            #}
+            #elsif (!exists($data->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
+            #    && !exists($data->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
+            #    && !exists($data->{'domain2user'}{lc($from)})  # sender domain is remote
+            #    && !grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
+            #    # then this is an incoming email and we don't care about it
+            #    delete $data->{'mail_ids'}{$mailid};
+            #} elsif (@{$data->{'mail_ids'}{$mailid}{'recipients'}} ==
+            #       grep { $_ =~ /\@\Q$data->{'mail_ids'}{$mailid}{'sender_domain'}\E$/i }
+            #       @{$data->{'mail_ids'}{$mailid}{'recipients'}}) {
+            #    # if the number of recipients is the same as the number of
+            #    # recipients that are to the sender domain, which is local,
+            #    # then we don't care.  people can spam themselves all they
+            #    # want.
+            #    delete $data->{'mail_ids'}{$mailid};
             } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
                 # actually just go ahead and drop all mail that's only to local addresses
                 delete $data->{'mail_ids'}{$mailid};
@@ -2649,12 +2652,17 @@ sub find_dovecot_logins {
     }
 }
 
-# implemented: SUSP.LOG1 account suspect if login IPs have >10 unique leading 2 octets
+# implemented: SUSP.LOG1 account suspect if login IPs have >2 unique leading 3 octets
+# indicate on >10
 sub analyze_logins {
     for my $login (keys %{$data->{'logins'}}) {
         my %prefix = map { /^(\d+\.\d+\.)/ or die $_; ($1, 1) } keys %{$data->{'logins'}{$login}{'logins_from'}};
-        next unless scalar(keys %prefix) > 10;
-        $data->{'suspects'}{'logins'}{$login} = $data->{'logins'}{$login};
+        next unless scalar(keys %prefix) > 2;
+        $data->{'logins'}{$login}{'suspect'} = 1;
+        $data->{'logins'}{$login}{'indicate'} = 1 if scalar(keys %prefix) > 10;
+        for (keys %{$data->{'logins'}{$login}{'logins_from'}}) {
+            $data->{'logins'}{$login}{'country'}{SpamReport::GeoIP::lookup($_)}{$_} += $data->{'logins'}{$login}{'logins_from'}{$_};
+        }
     }
 }
 
@@ -2755,6 +2763,7 @@ sub check_options {
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},
         'scripts'     => \$OPTS{'scripts'},
+        'logins'      => \$OPTS{'logins'},
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
         'hourly'      => \$OPTS{'hourly_report'},
@@ -2848,6 +2857,8 @@ sub check_options {
     $OPTS{'exim_postdays'} = \%eximpost;
 
     $OPTS{'full'} = 1 if $OPTS{'user'};
+
+    die "--logins is incompatible with --user" if $OPTS{'user'} and $OPTS{'logins'};
 
     return $result;
 }
@@ -3218,11 +3229,17 @@ sub main {
 
         SpamReport::GeoIP::init();
 
-        SpamReport::Output::analyze_results();
+        if ($OPTS{'logins'}) {
+            SpamReport::Maillog::analyze_logins();
+            SpamReport::Output::print_login_results();
+        } else {
+            SpamReport::Output::analyze_results();
+        }
+
         if ($OPTS{'user'}) {
             SpamReport::Output::analyze_user_results($OPTS{'user'}, $OPTS{'reseller'});
             SpamReport::Output::print_user_results($OPTS{'user'}, $OPTS{'reseller'});
-        } else {
+        } elsif (!$OPTS{'logins'}) {
             SpamReport::Output::print_results() unless $OPTS{'cron'};
         }
     }
@@ -3265,6 +3282,8 @@ Options:
     -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
                 | --hourly              : add an emails/hour section to --user output
     -r          | --reseller            : report on all of user's resold accounts
+
+                | --logins              : print login report
 
     -w          | --without=<u1 u2 ..>  : remove space-separated users' email before reporting
     -f          | --full                : don't remove ticketed users' email before reporting
