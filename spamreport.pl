@@ -915,6 +915,12 @@ sub analyze_user_indicators {
             $data->{'indicators'}{$user}{"security:" . ago($mtime, 1)}++;
         }
     }
+    for my $login (keys %{$data->{'logins'}}) {
+        next unless $data->{'logins'}{$login}{'indicate'};
+        if ($login =~ /[\@+]([^\@+]+)$/ && exists $users{$data->{'domain2user'}{$1}}) {
+            $data->{'indicators'}{$data->{'domain2user'}{$1}}{$login.':'.$data->{'logins'}{$login}{'total_logins'}."(IPs)"}++;
+        }
+    }
     for (keys %users) {
         next unless $users{$_}{'total'};
         if ($users{$_}{'botmail'} / $users{$_}{'total'} > 0.8) {
