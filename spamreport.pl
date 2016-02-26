@@ -246,7 +246,7 @@ my $cutoff = $midnight - (60 * 24 * 3600);  # 60 days ago
 sub load {
     load_abusetool();
     load_lockdown();
-    opendir my $d, $abusepath or do { warn "Unable to open $abusepath : $!"; next };
+    opendir my $d, $abusepath or do { warn "Unable to open $abusepath : $!"; return };
     while ($_ = readdir($d)) {
         open my $f, '<', $abusepath.$_ or next;
         my $ctime = (stat($f))[10];
@@ -2577,9 +2577,9 @@ sub open {
 
     return undef if exists $open_dbs->{$db_name};
 
-    die "Could not open $lock_file" if ( ! -r $lock_file );
+    #die "Could not open $lock_file" if ( ! -r $lock_file );
     my $lock_file_fh = Symbol::gensym();
-    sysopen($lock_file_fh, $lock_file, O_RDONLY) or die "Could not lock database $db_name: $!\n";
+    sysopen($lock_file_fh, $lock_file, O_RDONLY|O_CREAT, 0640) or die "Could not lock database $db_name: $!\n";
 
     flock $lock_file_fh, LOCK_SH or die "Could not flock() lockfile $lock_file: $!\n";
 
