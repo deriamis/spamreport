@@ -4,6 +4,8 @@ BEGIN {
 package SpamReport::GeoIP;
 use Geo::IPfree;
 use IP::Country::Fast;
+use vars qw($VERSION);
+$VERSION = '2016022601';
 
 my ($geo, $ipc);
 
@@ -32,7 +34,7 @@ use Storable qw(lock_store lock_retrieve);
 use POSIX qw(strftime);
 
 use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
 $data = {};
@@ -236,7 +238,7 @@ use vars qw($VERSION);
 use SpamReport::Data;
 use Time::Local;
 use common::sense;
-$VERSION = '2016022501';
+$VERSION = '2016022601';
 my $abusetool_log = '/var/log/abusetool.log';
 my $lockdown_log = '/var/log/lockdown.log';
 my $abusepath = '/opt/eig_linux/var/suspended/';
@@ -502,7 +504,8 @@ package SpamReport::ANSIColor;
 use common::sense;
 use Exporter;
 
-use vars qw(@ISA @EXPORT);
+use vars qw($VERSION @ISA @EXPORT);
+$VERSION = '2016022601';
 @ISA = 'Exporter';
 @EXPORT = qw($RED $GREEN $YELLOW $MAGENTA $CYAN $NULL);
 
@@ -525,7 +528,7 @@ use common::sense;
 use SpamReport::Data;
 
 use vars qw/$VERSION %embargo/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 use SpamReport::ANSIColor;
 
@@ -647,7 +650,7 @@ use common::sense;
 use SpamReport::Data;
 
 use vars qw/$VERSION/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 use Time::Local;
 use List::Util qw(shuffle sum);
@@ -2013,7 +2016,7 @@ use strict;
 use warnings;
 
 use vars qw/$VERSION/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 use Time::Local;
 use Regexp::Common qw( SpamReport );
@@ -2224,7 +2227,7 @@ use common::sense;
 use SpamReport::Data;
 
 use vars qw/$VERSION/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 use Time::Local;
 use Regexp::Common qw( Exim );
@@ -2664,7 +2667,7 @@ use IO::File;
 use Fcntl qw(:flock O_RDWR O_RDONLY O_WRONLY O_CREAT);
 
 use vars qw/$VERSION/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 my $db_dir = '/var/spool/exim/db';
 my $open_dbs = {};
@@ -2731,7 +2734,7 @@ use SpamReport::Data;
 use common::sense;
 
 use vars qw/$VERSION/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 use Time::Local;
 use Regexp::Common qw/ Maillog /;
@@ -2810,7 +2813,7 @@ use common::sense;
 use 5.008_008; use v5.8.8;
 
 use vars qw/$VERSION/;
-$VERSION = '2016021901';
+$VERSION = '2016022601';
 
 use Time::Local;
 use Time::localtime;
@@ -2901,7 +2904,7 @@ sub check_options {
         'latest'      => \$OPTS{'latest'},
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
-        'version'     => sub { VersionMessage() },
+        'version'     => sub { VersionMessage(module_versions()) },
     );
 
     if ( $OPTS{'start_time'} && $OPTS{'start_time'} !~ m/^\d+$/ ) {
@@ -3380,6 +3383,34 @@ sub main {
     }
     DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
     SpamReport::Tracking::Scripts::save();
+}
+
+sub module_versions {
+    my $output;
+    for (qw(SpamReport::GeoIP
+            SpamReport::Data
+            SpamReport::Tracking::Scripts
+            SpamReport::Tracking::Suspensions
+            SpamReport::Tracking::Performance
+            Regexp::Common::Exim
+            Regexp::Common::Maillog
+            Regexp::Common::SpamReport
+            SpamReport::ANSIColor
+            SpamReport::Annotate
+            SpamReport::Output
+            File::Nonblock
+            SpamReport::Cpanel
+            SpamReport::Exim
+            SpamReport::Exim::DB
+            SpamReport::Maillog
+            SpamReport)) {
+        my $v = ${$_."::VERSION"};
+        if ($v =~ /^(\d{4}) (\d{2}) (\d{2}) (\d{2})$/x) {
+            $v = $months[$2-1] . " $3, $1 rev. " . (0+$4)
+        }
+        $output .= "($v) $_\n"
+    }
+    $output
 }
 
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
