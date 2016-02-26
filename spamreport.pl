@@ -832,13 +832,13 @@ sub print_responsibility_results {
 
     if (5 < keys(%{$data->{'owner_responsibility'}})) {
         # 5 to ignore random bad users on shared servers
-        percent_report($data->{'owner_responsibility'}, $bounces, $cutoff,
-            "bouncebacks (owner)$exclbounce", undef, sub {
+        percent_report($data->{'owner_responsibility'}, $emails, $cutoff,
+            "outgoing emails (owner)$excl", undef, sub {
                 SpamReport::Annotate::owner(@_, "owner_responsibility", "responsibility")
         });
-        percent_report($data->{'owner_bounce_responsibility'}, $emails, $cutoff,
-            "outgoing emails (owner)$excl", undef, sub {
-                SpamReport::Annotate::owner(@_, "owner_bounce_responsibility", "bounce_responsibility")
+        percent_report($data->{'bounce_owner_responsibility'}, $bounces, $cutoff,
+            "bouncebacks (owner)$exclbounce", undef, sub {
+                SpamReport::Annotate::owner(@_, "bounce_owner_responsibility", "bounce_responsibility")
         });
     }
     percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails$excl", $data->{'total_discarded'}, \&SpamReport::Annotate::user);
@@ -2491,7 +2491,9 @@ sub parse_exim_mainlog {
                 $data->{'domain_responsibility'}{$1}++;
                 $data->{'mailbox_responsibility'}{$to[0]}++;
                 $data->{'bounce_responsibility'}{$user}++;
-                $data->{'owner_bounce_responsibility'}{$user}++ if exists $data->{'owner2user'}{$user};
+                $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
+                        if exists $data->{'user2owner'}{$user}
+			&& $data->{'user2owner'}{$user} ne 'root';
                 $data->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
             }
@@ -3271,7 +3273,7 @@ sub purge {
         delete $data->{'responsibility'}{$_};
         delete $data->{'owner_responsibility'}{$_};
         delete $data->{'bounce_responsibility'}{$_};
-        delete $data->{'owner_bounce_responsibility'}{$_};
+        delete $data->{'bounce_owner_responsibility'}{$_};
     }
     for (keys %{$data->{'outscript'}}) {
         delete $data->{'outscript'}{$_} if m,^/[^/]+/([^/]+)/, && exists $users{$1}
