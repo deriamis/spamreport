@@ -77,7 +77,7 @@ sub _times {
 my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
         responsibility domain_responsibility bounce_responsibility owner_responsibility
-        bounce_owner_responsibility mailbox_responsibility
+        bounce_owner_responsibility mailbox_responsibility forwarder_responsibility
         young_users young_mailboxes outip outscript hourly_volume total_outgoing total_bounce
     );
 sub savecron {
@@ -650,7 +650,7 @@ use vars qw/$VERSION/;
 $VERSION = '2016021901';
 
 use Time::Local;
-use List::Util qw(shuffle);
+use List::Util qw(shuffle sum);
 use SpamReport::ANSIColor;
 use Regexp::Common qw(SpamReport);
 
@@ -716,9 +716,56 @@ sub print_results {
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
     print_auth_mismatch() if $data->{'auth_mismatch'};
+    note_forwarder_abuse();
 
     print "\n";
     1;
+}
+
+sub print_forwarder_abuse {
+    my @abuse = sort { $b->[1] <=> $a->[1] } 
+                map { [$_, List::Util::sum(values %{$data->{'forwarder_responsibility'}{$_}})] }
+                keys %{$data->{'forwarder_responsibility'}};
+    my $total = 0; $total += $_->[1] for @abuse;
+    unless ($total) { print "No forward abusers found.\n"; return }
+
+    my $omitted = @abuse;
+    @abuse = grep { $_->[1]/$total > 0.01 } @abuse unless $data->{'OPTS'}{'full'};
+    $omitted -= @abuse;
+
+    my @width = (0, 0);
+    for (@abuse) {
+        $width[0] = length($_->[1]) if length($_->[1]) > $width[0];
+        $width[1] = length($_->[0]) if length($_->[0]) > $width[1];
+    }
+    for (@abuse) {
+        printf "%$width[0]d %.1f%% %$width[0]s",
+            $_->[1], $_->[1]/$total*100, SpamReport::Annotate::user($_->[0]);
+        my $tab; $tab++ if 1 < scalar(keys %{$data->{'forwarder_responsibility'}{$_->[0]}});
+        for (keys %{$data->{'forwarder_responsibility'}{$_->[0]}}) {
+            printf "%s$YELLOW%s$NULL -> $GREEN%s$NULL",
+                ($tab ? "\n\t" : " :: "),
+                $_,
+                join(" ", keys %{$data->{'offserver_forwarders'}{$_}})
+        }
+        print "\n";
+    }
+
+    if ($omitted) {
+        print "\n$omitted users were hidden; re-run with --full to see them.\n"
+    }
+}
+
+sub note_forwarder_abuse {
+    my @abuse = sort { $b->[1] <=> $a->[1] }
+                map { [$_, List::Util::sum(values %{$data->{'forwarder_responsibility'}{$_}})] }
+                keys %{$data->{'forwarder_responsibility'}};
+    my $total = 0; $total += $_->[1] for @abuse;
+    return unless $total;
+
+    printf "\nThere were %s emails (to %d accounts) that were forwarded off-server.\n"
+         . "(for details, re-run with --forwarders)\n",
+        commify($total), scalar(@abuse);
 }
 
 sub analyze_mailboxes {
@@ -2065,6 +2112,36 @@ sub map_valiases {
     return (\%alias2dest, \%dest2alias);
 }
 
+# yes this is necessary :p  http://hgfix.net/paste/view/0766d18b
+our ($safety, $alias_domain);
+sub find_offserver {
+    my (@aliases) = @_;
+    local ($safety) = ($safety + 1);
+    my @results;
+    if ($safety > 10) {
+        warn "Recursion too deep at @aliases in /etc/valiases/$alias_domain\n";
+        return ()
+    }
+    for (@aliases) {
+        if (exists $data->{'alias2dest'}{$_}) {
+            push @results, find_offserver(@{$data->{'alias2dest'}{$_}});
+        }
+        elsif (/[\@+]([^\@+]+)$/ && !exists($data->{'domain2user'}{$1})) {
+            push @results, $_
+        }
+    }
+    return @results
+}
+sub offserver_forwarders {
+    for my $alias (keys %{$data->{'alias2dest'}}) {
+        $alias_domain = '(UNKNOWN)';  $alias_domain = $1 if $alias =~ /[\@+]([^\@+]+)$/;
+        $safety = 0;
+        for (find_offserver(@{$data->{'alias2dest'}{$alias}})) {
+            $data->{'offserver_forwarders'}{$alias}{$_}++;
+        }
+    }
+}
+
 my $cpaddpop = qr/$RE{'cpanel'}{'addpop'}/;
 my $aptimest = qr/$RE{'apache'}{'timestamp'}/;
 sub find_email_creation {
@@ -2475,6 +2552,11 @@ sub parse_exim_mainlog {
             #    # then we don't care.  people can spam themselves all they
             #    # want.
             #    delete $data->{'mail_ids'}{$mailid};
+            } elsif (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
+                for my $forwarder (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
+                    next unless $forwarder =~ /[\@+]([^\@+]+)$/ && exists $data->{'domain2user'}{$1};
+                    $data->{'forwarder_responsibility'}{$data->{'domain2user'}{$1}}{$forwarder}++;
+                }
             } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
                 # actually just go ahead and drop all mail that's only to local addresses
                 delete $data->{'mail_ids'}{$mailid};
@@ -2800,7 +2882,7 @@ sub check_options {
         'create|c=s@' => \$OPTS{'search_create'},
         'dbs!'        => \$OPTS{'check_dbs'},
         'read|r=i'    => \$OPTS{'read_lines'},
-        'uncached'    => \$OPTS{'uncached'},
+        'uncached'    => \$OPTS{'uncached'},  # experimental, undocumented
         'cron'        => \$OPTS{'cron'},
         'update'      => \$OPTS{'update'},
         'without|w=s' => \$OPTS{'without'},
@@ -2808,9 +2890,10 @@ sub check_options {
         'load=s'      => \$OPTS{'load'},
         'loadcron=s'  => \$OPTS{'loadcron'},
         'user|u=s'    => \$OPTS{'user'},
-        'cutoff=i'    => \$OPTS{'r_cutoff'},
-        'scripts'     => \$OPTS{'scripts'},
+        'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
+        'md5scripts'  => \$OPTS{'scripts'},
         'logins'      => \$OPTS{'logins'},
+        'forwarders'  => \$OPTS{'forwarders'},
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
         'hourly'      => \$OPTS{'hourly_report'},
@@ -3152,6 +3235,7 @@ sub setup_cpanel {
     } keys %factories;
 
     $data->{$_} = $new->{$_} for keys %$new;
+    SpamReport::Cpanel::offserver_forwarders();
 
     1;
 }
@@ -3277,14 +3361,17 @@ sub main {
 
         SpamReport::GeoIP::init();
 
-        if ($OPTS{'logins'}) {
+        if ($OPTS{'forwarders'}) {
+        } elsif ($OPTS{'logins'}) {
             SpamReport::Maillog::analyze_logins();
             SpamReport::Output::print_login_results();
         } else {
             SpamReport::Output::analyze_results();
         }
 
-        if ($OPTS{'user'}) {
+        if ($OPTS{'forwarders'}) {
+            SpamReport::Output::print_forwarder_abuse();
+        } elsif ($OPTS{'user'}) {
             SpamReport::Output::analyze_user_results($OPTS{'user'}, $OPTS{'reseller'});
             SpamReport::Output::print_user_results($OPTS{'user'}, $OPTS{'reseller'});
         } elsif (!$OPTS{'logins'}) {
@@ -3332,6 +3419,7 @@ Options:
     -r          | --reseller            : report on all of user's resold accounts
 
                 | --logins              : print login report
+                | --forwarders          : print forwarder reporter
 
     -w          | --without=<u1 u2 ..>  : remove space-separated users' email before reporting
     -f          | --full                : don't remove ticketed users' email before reporting
@@ -3347,7 +3435,7 @@ Options:
                                           $path.cron  : --cron seeded data, if one was loaded
                                           $path.scan  : pre-analysis data, after scans are done
                                           $path.post  : post-analysis data
-                | --scripts             : track IPs hitting md5sums of scripts sending email
+                | --md5cripts           : track IPs hitting md5sums of scripts sending email
                                           (implied by --cron)
 
                 | --help
