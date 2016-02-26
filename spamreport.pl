@@ -893,6 +893,7 @@ sub analyze_user_indicators {
             $users{$user}{'boxtrapper'}++;
         }
     }
+    my @history = reverse history_since(time() - 7 * 3600 * 24);
     for my $user (keys %users) {
         for (keys %{$data->{'outscript'}}) {
             $users{$user}{'outscript'} += $data->{'outscript'}{$_} if m,/home\d*/\Q$user\E/,
@@ -902,13 +903,10 @@ sub analyze_user_indicators {
                 $data->{'indicators'}{$user}{"abuse:$_"}++
             }
         }
-    }
-    my @history = reverse history_since(time() - 7 * 3600 * 24);
-    USER: for my $user (keys %users) {
         for (@history) {
             if ($_->[1] =~ /\Q$user/) {
                 $data->{'in_history'}{$user} = $_->[0];
-                next USER;
+                last
             }
         }
     }
