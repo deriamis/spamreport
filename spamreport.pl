@@ -897,6 +897,11 @@ sub analyze_user_indicators {
         for (keys %{$data->{'outscript'}}) {
             $users{$user}{'outscript'} += $data->{'outscript'}{$_} if m,/home\d*/\Q$user\E/,
         }
+        for (scalar(SpamReport::Tracking::Suspensions::tickets($user))) {
+            if ($_) {
+                $data->{'indicators'}{$user}{"abuse:$_"}++
+            }
+        }
     }
     my @history = reverse history_since(time() - 7 * 3600 * 24);
     USER: for my $user (keys %users) {
