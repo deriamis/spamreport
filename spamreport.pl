@@ -233,22 +233,19 @@ $INC{'SpamReport/Tracking/Scripts.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Tracking::Suspensions;
 use vars qw($VERSION);
-use YAML::Syck qw(DumpFile LoadFile);
+use SpamReport::Data;
 use Time::Local;
 use common::sense;
 $VERSION = '2016022501';
-my $trackpath = '/opt/hgmods/logs/spamsuspensions.dat';
+my $abusetool_log = '/var/log/abusetool.log';
+my $lockdown_log = '/var/log/lockdown.log';
 my $abusepath = '/opt/eig_linux/var/suspended/';
 my $midnight = timelocal(0, 0, 0, (localtime)[3..8]);
+my $cutoff = $midnight - (60 * 24 * 3600);  # 60 days ago
 
-my $tracking;
-my %active;
-
-sub load { eval { $tracking = LoadFile($trackpath) } }
-sub save { if ($tracking) { prune(); DumpFile($trackpath, $tracking) } }
-
-sub track {
-    load();
+sub load {
+    load_abusetool();
+    load_lockdown();
     opendir my $d, $abusepath or do { warn "Unable to open $abusepath : $!"; next };
     while ($_ = readdir($d)) {
         open my $f, '<', $abusepath.$_ or next;
@@ -256,38 +253,60 @@ sub track {
         chomp(my $ticket = <$f>);
         close $f;
         if ($ticket && $ctime) {
-            $tracking->{$_}{$ticket} = $ctime;
-            $active{$_} = $ticket;
+            $data->{'suspensions'}{$_}{"$ticket.http"}{'disable'} = $ctime
         }
     }
     close $d;
-    save();
 }
 
 sub ticket {
     my ($user) = @_;
-    return $active{$user} ? ($active{$user}) : ()
+    grep { defined($data->{'suspensions'}{$user}{$_}{'disable'}) &&
+          !defined($data->{'suspensions'}{$user}{$_}{'enable'}) }
+        keys %{$data->{'suspensions'}{$_[0]}}
 }
 
 sub ticketed_users {
-    return keys %active
-}
-
-# returns ( ticketid -> ctime ) hashref
-sub user_tickets {
-    my ($user) = @_;
-    return $tracking->{$user};
-}
-
-sub prune {
-    my $cutoff = $midnight - (180 * 3600 * 24);  # 180 days ago
-    for my $user (keys %$tracking) {
-        for (keys %{$tracking->{$user}}) {
-            if ($tracking->{$user}{$_} < $cutoff) {
-                delete $tracking->{$user}{$_}
+    my @users;
+    for my $user (keys %{$data->{'suspensions'}}) {
+        for my $susp (keys %{$data->{'suspensions'}{$user}}) {
+            if (defined $data->{'suspensions'}{$user}{$susp}{'disable'} &&
+                    !defined $data->{'suspensions'}{$user}{$susp}{'enable'}) {
+                push @users, $user;
+                last
             }
         }
     }
+    @users
+}
+
+sub tickets { keys %{$data->{'suspensions'}{$_[0]}} }
+
+sub load_abusetool {
+    logs_after(sub {
+        my ($date, $type, $action, $user, $ticket) = split /:/, shift;
+        $data->{'suspensions'}{$user}{"$ticket.$type"}{$action} = $date;
+    }, $abusetool_log, $cutoff)
+}
+
+sub load_lockdown {
+    logs_after(sub {
+        my ($date, $type, $action, $ticket) = split /:/, shift;
+        $data->{'suspensions'}{'root'}{"$ticket.$type"}{$action} = $date;
+    }, $lockdown_log, $cutoff)
+}
+
+sub logs_after {
+    my ($handler, $log, $time) = @_;
+    my @r;
+    return unless -f $log;
+    open my $f, '<', $log or do { warn "Unable to open $log : $!"; return };
+    while (defined($_ = <$f>)) {
+        chomp;
+        next unless /^(\d+):/ && $1 > $cutoff;
+        $handler->($_);
+    }
+    close $f;
 }
 
 1;
@@ -696,7 +715,6 @@ sub print_results {
     #print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
-    #print_login_results() if exists $data->{'suspects'}{'logins'};
     print_auth_mismatch() if $data->{'auth_mismatch'};
 
     print "\n";
@@ -1226,21 +1244,32 @@ sub user_ticket_report {
     $isreseller = 1 if $user eq 'root';
     my @tickets;
     my $r = "----------------------------------------\n\n";
-    my @widths = (0, 0, 0);
+    my @widths = (0, 0, 0, 0);
     for my $u (sort $user, @{$data->{'owner2user'}{$user}}) {
-        my $t = SpamReport::Tracking::Suspensions::user_tickets($u);
-        next unless $t;
-        push @tickets, map { [$u, $_, ago($t->{$_}) . " ago", $t->{$_}] } keys %$t;
+        my @t = SpamReport::Tracking::Suspensions::tickets($u);
+        next unless @t;
+        for my $t (@t) {
+            if ($data->{'suspensions'}{$u}{$t}{'enable'}) {
+                push @tickets, [$u, $t, (map { ago($data->{'suspensions'}{$u}{$t}{$_}) . " ago" } qw(enable disable)),
+                                $data->{'suspensions'}{$u}{$t}{'disable'}]
+            }
+            else {
+                push @tickets, [$u, $t, ago($data->{'suspensions'}{$u}{$t}{'disable'}) . " ago", '', 
+                                $data->{'suspensions'}{$u}{$t}{'disable'}]
+            }
+        }
     }
     for (@tickets) {
         $widths[0] = length($_->[0]) if length($_->[0]) > $widths[0];
         $widths[1] = length($_->[1]) if length($_->[1]) > $widths[1];
         $widths[2] = length($_->[2]) if length($_->[2]) > $widths[2];
+        $widths[3] = length($_->[3]) if length($_->[3]) > $widths[3];
     }
-    for (sort { $a->[3] <=> $b->[3] } @tickets) {
-        $r .= sprintf("%s$RED%$widths[1]s$NULL : %$widths[2]s : %s\n",
+    for (sort { $a->[4] <=> $b->[4] } @tickets) {
+        $r .= sprintf("%s%s%$widths[1]s$NULL : %$widths[2]s -> %$widths[3]s : %s\n",
                 ($isreseller ? sprintf("%$widths[0]s : ", $_->[0]) : ''),
-                $_->[1], $_->[2], scalar(localtime($_->[3])))
+                ($_->[3] ? '' : $RED),
+                $_->[1], $_->[2], $_->[3], scalar(localtime($_->[4])))
     }
     $r .= "\n";
     $r
@@ -3170,7 +3199,6 @@ sub main {
     }
 
     SpamReport::Tracking::Scripts::load();
-    SpamReport::Tracking::Suspensions::track();
 
     unless ($OPTS{'latest'} or $OPTS{'cron'}) {
         SpamReport::Data::loadcron($OPTS{'loadcron'});
@@ -3220,6 +3248,8 @@ sub main {
     }
     DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
     SpamReport::Data::save() unless $OPTS{'latest'};
+
+    SpamReport::Tracking::Suspensions::load();
 
     if (!$OPTS{'update'}) {
         my @to_purge;
