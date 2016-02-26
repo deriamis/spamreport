@@ -893,7 +893,8 @@ sub analyze_user_indicators {
             $users{$user}{'boxtrapper'}++;
         }
     }
-    my @history = reverse history_since(time() - 7 * 3600 * 24);
+    my $recently = time() - 7 * 24 * 3600;
+    my @history = reverse history_since($recently);
     for my $user (keys %users) {
         for (keys %{$data->{'outscript'}}) {
             $users{$user}{'outscript'} += $data->{'outscript'}{$_} if m,/home\d*/\Q$user\E/,
@@ -908,6 +909,10 @@ sub analyze_user_indicators {
                 $data->{'in_history'}{$user} = $_->[0];
                 last
             }
+        }
+        my $mtime = (stat("/home/$user/.security"))[9];
+        if ($mtime > $recently) {
+            $data->{'indicators'}{$user}{"security:" . ago($mtime, 1)}++;
         }
     }
     for (keys %users) {
@@ -1232,12 +1237,16 @@ BOX
 
 {
     my $time = time();
+    my %units = (
+        undef => {days => " days", hours => " hours"},
+        1     => {days => "d", hours => "h"}
+    );
     sub ago {
         my $delta = ($time - $_[0]) / (24 * 3600);
         if ($delta > 1) {
-            sprintf "%.1f days", $delta
+            sprintf "%.1f$units{$_[1]}{days}", $delta
         } else {
-            sprintf "%.1f hours", ($time - $_[0]) / 3600
+            sprintf "%.1f$units{$_[1]}{hours}", ($time - $_[0]) / 3600
         }
     }
 }
