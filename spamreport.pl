@@ -3473,11 +3473,6 @@ Options:
                 | --man
                 | --version
 
-crondata: a serialized data structure containing data from calendar days prior
-to today's.
-
-fulldata: a serialized data structure containing all data, including today's.
-
 Usage:
 
     spamreport              # get a report.  if crondata is fresh, it is used
@@ -3488,7 +3483,11 @@ Usage:
 
 Indicator key:
 
-    ABC-12341234       | a ticket ID in an active abusetool suspension
+    ABC-12341234.http  | a ticket ID in an active abusetool suspension
+    abuse:#            | user was abusetool'd # times in the last 60 days
+    security:12h       | ~user/.security was modified $time ago
+    discard:22.3%      | % of user's email that hit the 500/hr limit and was discarded
+
     seen:              | first root history mention of user within last week
     (user age)         | user was added to cPanel <2 weeks ago
     stale:             | <10% of user's email was sent in last 24 hours
@@ -3503,6 +3502,7 @@ Indicator key:
                          e.g. Account Details for ...
 
     boxtrapper:        | >50% of email has subjects suggesting boxtrapper
+  bob@domain.com(IPs)  | mailbox has more than 10 /16 IPs authenticating as it
 
 =head1 FILES
 
