@@ -755,7 +755,8 @@ sub print_forwarder_abuse {
     }
 
     if ($omitted) {
-        print "\n$omitted users were hidden; re-run with --full to see them.\n"
+        print "\n$omitted users were hidden"
+            . (defined $ENV{RUSER} ? "; re-run with --full to see them.\n" : ".\n")
     }
 }
 
@@ -767,7 +768,7 @@ sub note_forwarder_abuse {
     return unless $total;
 
     printf "\nThere were %s emails (to %d accounts) that were forwarded off-server.\n"
-         . "(for details, re-run with --forwarders)\n",
+        . (defined $ENV{RUSER} ? "(for details, re-run with --forwarders)\n" : ''),
         commify($total), scalar(@abuse);
 }
 
@@ -1418,7 +1419,7 @@ Top subjects:
 -------------
 @{[topsubjects($u->{'subject'})]}
 
-Total number of discrete subjects: @{[commify($u->{'subject'})]}
+Total number of distinct subjects: @{[commify($u->{'subject'})]}
 
 Emails found in queue:
 ----------------------
