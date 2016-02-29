@@ -2116,13 +2116,14 @@ sub map_valiases {
 }
 
 # yes this is necessary :p  http://hgfix.net/paste/view/0766d18b
-our ($safety, $alias_domain);
+our ($safety, $alias_domain, %bad_valiases);
 sub find_offserver {
     my (@aliases) = @_;
     local ($safety) = ($safety + 1);
     my @results;
     if ($safety > 10) {
-        warn "Recursion too deep at @aliases in /etc/valiases/$alias_domain\n";
+        warn "[NOTICE] circular definitions found in /etc/valiases/$alias_domain\n"
+            unless $bad_valiases{$alias_domain}++;
         return ()
     }
     for (@aliases) {
