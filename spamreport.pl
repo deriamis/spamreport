@@ -1284,12 +1284,22 @@ BOX
 
 sub php_scripts {
     my ($u) = @_;
-    return unless [values(%{$u->{'script'}})]->[0];
-    return <<BOX
+    my $r;
+    if ((values(%{$u->{'cwd'}}))[0]) {
+        $r .= <<PHP
+Current working directories:
+------------
+@{[sample($u->{'cwd'}, "working directories")]}
+PHP
+    }
+    if ((values(%{$u->{'script'}}))[0]) {
+        $r .= <<PHP
 PHP Scripts:
 ------------
 @{[sample($u->{'script'}, "PHP scripts")]}
-BOX
+PHP
+    }
+    $r
 }
 
 {
@@ -1403,9 +1413,6 @@ There were @{[commify($u->{'bounce'})]} bounces on @{[commify($u->{'bounce_addre
 Logins used to send mail:
 -------------------------
 @{[sample($u->{'sent_accounts'}, "logins")]}
-Current working directories:
-----------------------------
-@{[sample($u->{'cwd'}, "working directories")]}
 @{[php_scripts($u)]}Random recipient addresses:
 ---------------------------
 @{[join "\n",
