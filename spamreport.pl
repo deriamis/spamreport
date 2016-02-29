@@ -212,6 +212,50 @@ sub prune {
     }
 }
 
+sub latest {
+    my %r;
+    for my $md5sum (keys %$tracking) {
+        my $latest = (sort { $b <=> $a } keys %{$tracking->{$md5sum}})[0];
+        my $ips = scalar(keys %{$tracking->{$md5sum}{$latest}{'ips'}});
+        my %ip16; for (keys %{$tracking->{$md5sum}{$latest}{'ips'}}) { $ip16{$1}++ if /^(\d+\.\d+\.)/ }
+        my %geo; for (keys %{$tracking->{$md5sum}{$latest}{'ips'}}) { $geo{SpamReport::GeoIP::lookup($_)}++ }
+        my (%files, %paths);
+        my $count = 0; for (values %{$tracking->{$md5sum}{$latest}{'ips'}}) { $count += $_ }
+        for my $time (keys %{$tracking->{$md5sum}}) {
+            for (keys %{$tracking->{$md5sum}{$time}{'paths'}}) {
+                $paths{$_} += $tracking->{$md5sum}{$time}{'paths'};
+                next unless m,/([^/]+)$,;
+                $files{$1} += $tracking->{$md5sum}{$time}{'paths'}
+            }
+        }
+        $r{$md5sum} = {
+            latest => $latest,
+            count => $count,
+            ips => $ips,
+            ip16 => scalar(keys %ip16),
+            geo => \%geo,
+            file => (sort { $files{$b} <=> $files{$a} } keys %files)[0],
+            path_variations => scalar(keys %paths),
+            file_variations => scalar(keys %files),
+        }
+    }
+    \%r
+}
+
+sub paths {
+    my ($md5) = @_;
+    my %r;
+    for my $time (keys %{$tracking->{$md5}}) {
+        for (keys %{$tracking->{$md5}{$time}{'paths'}}) {
+            $r{$_}{'count'} += $tracking->{$md5}{$time}{'paths'}{$_};
+            $r{$_}{'latest'} = $time if $time > $r{$_}{'latest'};
+        }
+    }
+    \%r
+}
+
+sub get_md5 { return $tracking->{$_[0]} }
+
 # /usr/bin/time perl -MDigest::MD5 -le '$m = Digest::MD5->new; open my $f, "<", "bigfile"; $m->addfile($f); print $m->hexdigest'
 # cd573cfaace07e7949bc0c46028904ff
 # 3.86user 0.47system 0:04.34elapsed 99%CPU (0avgtext+0avgdata 2432maxresident)k
@@ -772,6 +816,55 @@ sub note_forwarder_abuse {
         commify($total), scalar(@abuse);
 }
 
+sub print_script_report {
+    my $latest = SpamReport::Tracking::Scripts::latest();
+    my @widths = (length("#"), length("IP"), length("/IP"), length("GEO"), length("PATH"), length("NAME"));
+    my $time = time();
+    my $total = 0; for (values %$latest) { $total += $_->{'count'} }
+    for (keys %$latest) {
+        $widths[0] = length($latest->{$_}{'count'}) if length($latest->{$_}{'count'}) > $widths[0];
+        $widths[1] = length($latest->{$_}{'ips'}) if length($latest->{$_}{'ips'}) > $widths[1];
+        $widths[2] = length($latest->{$_}{'ip16'}) if length($latest->{$_}{'ip16'}) > $widths[2];
+        $widths[3] = length(keys(%{$latest->{$_}{'geo'}})) if length(keys(%{$latest->{$_}{'geo'}})) > $widths[3];
+        $widths[4] = length(keys(%{$latest->{$_}{'path_variations'}})) if length(keys(%{$latest->{$_}{'path_variations'}})) > $widths[4];
+        $widths[5] = length(keys(%{$latest->{$_}{'file_variations'}})) if length(keys(%{$latest->{$_}{'file_variations'}})) > $widths[4];
+    }
+    my @scripts = sort { $latest->{$b}{'count'} <=> $latest->{$a}{'count'} } keys %$latest;
+    my $omitted = @scripts;
+    unless ($data->{'OPTS'}{'full'}) { @scripts = grep { $latest->{$_}{'count'}/$total > 0.01 } @scripts }
+    $omitted -= @scripts;
+    printf "%$widths[0]s %$widths[1]s %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s\n", 
+        ("#"x$widths[0]), "IP", "/16", "GEO", "PATH", "NAME";
+    for (@scripts) {
+        printf "%$widths[0]d %$widths[1]d %$widths[2]d %$widths[3]d %$widths[4]d %$widths[5]d %32s $GREEN%s$NULL %s %s\n",
+            $latest->{$_}{'count'}, $latest->{$_}{'ips'}, $latest->{$_}{'ip16'},
+            scalar(keys %{$latest->{$_}{'geo'}}), $latest->{$_}{'path_variations'}, $latest->{$_}{'file_variations'},
+            $_, $latest->{$_}{'file'}, top_country($latest->{$_}{'geo'}, 'direct'),
+            (($time - $latest->{$_}{'latest'} < 24 * 3600)
+                ? ''
+                : sprintf("$YELLOW%dd ago$NULL", ($time - $latest->{$_}{'latest'}) / (24 * 3600)))
+    }
+    if ($omitted) {
+        print "\n$omitted scripts were hidden"
+            . (defined $ENV{RUSER} ? "; re-run with --full to see them.\n" : ".\n")
+    }
+}
+
+sub print_script_info {
+    my ($md5) = @_;
+    my $tracking = SpamReport::Tracking::Scripts::paths($md5);
+    my $width = 0;
+    my $time = time();
+    for (values %$tracking) { $width = length($_->{'count'}) if length($_->{'count'}) > $width }
+    for (sort { $tracking->{$b}{'count'} <=> $tracking->{$a}{'count'} } keys %$tracking) {
+        printf "%${width}d %s%s\n", $tracking->{$_}{'count'},
+            SpamReport::Annotate::script($_),
+            (($time - $tracking->{$_}{'latest'} < 24 * 3600)
+                ? ''
+                : sprintf(" $RED%dd ago$NULL", ($time - $tracking->{$_}{'latest'}) / (24 * 3600)))
+    }
+}
+
 sub analyze_mailboxes {
     for my $mb (keys %{$data->{'mailbox_responsibility'}}) {
         next unless $mb =~ /(\S+?)@(\S+)/;
@@ -858,15 +951,28 @@ sub analyze_auth_mismatch {
     }
 }
 
+# $countries is a hashref of country names to
+#   $direct : a number of hits
+#  !$direct : a hash where the number of hits == keys of this hash
 sub top_country {
-    my ($countries) = @_;
-    my @countries = grep { defined $_ }
-        (sort { scalar(keys(%{$countries->{$b}})) <=>
-                scalar(keys(%{$countries->{$a}})) } keys %$countries)[0..2];
-    for my $embargo (grep { exists $SpamReport::Annotate::embargo{$_} } keys %$countries) {
-        push @countries, $_ unless grep { $embargo eq $_ } @countries
+    my ($countries, $direct) = @_;
+    my @countries;
+    if ($direct) {
+        @countries = grep { defined $_ }
+            (sort { $countries->{$b} <=> $countries->{$a} } keys %$countries)[0..2];
+    } else {
+        @countries = grep { defined $_ }
+            (sort { scalar(keys(%{$countries->{$b}})) <=>
+                    scalar(keys(%{$countries->{$a}})) } keys %$countries)[0..2];
     }
-    join " ", map { SpamReport::Annotate::country($_) .  ":" . scalar(keys(%{$countries->{$_}})) } @countries;
+    for my $embargo (grep { exists $SpamReport::Annotate::embargo{$_} } keys %$countries) {
+        push @countries, $embargo unless grep { $embargo eq $_ } @countries
+    }
+    if ($direct) {
+        join " ", map { SpamReport::Annotate::country($_) .  ":" . $countries->{$_} } @countries;
+    } else {
+        join " ", map { SpamReport::Annotate::country($_) .  ":" . scalar(keys(%{$countries->{$_}})) } @countries;
+    }
 }
 
 sub top_auth {
@@ -2907,6 +3013,8 @@ sub check_options {
         'user|u=s'    => \$OPTS{'user'},
         'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
         'md5scripts'  => \$OPTS{'scripts'},
+        'scripts'     => \$OPTS{'scriptreport'},
+        'md5=s'       => \$OPTS{'scriptmd5report'},
         'logins'      => \$OPTS{'logins'},
         'forwarders'  => \$OPTS{'forwarders'},
         'dump=s'      => \$OPTS{'dump'},
@@ -2976,6 +3084,10 @@ sub check_options {
         die "--latest/--load is incompatible with --update (we wouldn't have any new data to save)"
     }
     $OPTS{'latest'} = 1 if $OPTS{'user'} and !$OPTS{'load'} and !$OPTS{'uncached'};
+    if ($OPTS{'scriptreport'} || defined($OPTS{'scriptmd5report'})) {
+        $OPTS{'uncached'} = 1;
+        $OPTS{'run_sections'} = []
+    }
 
 
     if ($OPTS{'latest'} or $OPTS{'load'}) {
@@ -3301,7 +3413,7 @@ sub main {
 
     check_options() or pod2usage(2);
 
-    unless ($OPTS{'cron'} || $OPTS{'scripts'}) {
+    unless ($OPTS{'cron'} || $OPTS{'scripts'} || $OPTS{'scriptreport'} || defined($OPTS{'scriptmd5report'})) {
         SpamReport::Tracking::Scripts::disable()
     }
     if ($OPTS{'uncached'}) {
@@ -3376,6 +3488,7 @@ sub main {
         SpamReport::GeoIP::init();
 
         if ($OPTS{'forwarders'}) {
+        } elsif ($OPTS{'scriptreport'}) {
         } elsif ($OPTS{'logins'}) {
             SpamReport::Maillog::analyze_logins();
             SpamReport::Output::print_login_results();
@@ -3385,6 +3498,10 @@ sub main {
 
         if ($OPTS{'forwarders'}) {
             SpamReport::Output::print_forwarder_abuse();
+        } elsif ($OPTS{'scriptreport'}) {
+            SpamReport::Output::print_script_report();
+        } elsif (defined $OPTS{'scriptmd5report'}) {
+            SpamReport::Output::print_script_info($OPTS{'scriptmd5report'})
         } elsif ($OPTS{'user'}) {
             SpamReport::Output::analyze_user_results($OPTS{'user'}, $OPTS{'reseller'});
             SpamReport::Output::print_user_results($OPTS{'user'}, $OPTS{'reseller'});
