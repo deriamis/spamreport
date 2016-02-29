@@ -2865,7 +2865,7 @@ my %OPTS = (
     'hourly_report' => undef,
 );
 
-my @OPTS_OVERRIDE = qw(hourly_report r_cutoff reseller without full);
+my @OPTS_OVERRIDE = qw(hourly_report r_cutoff reseller user without full);
 
 my $hostname = hostname_long();
 my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
@@ -3291,13 +3291,6 @@ sub main {
 
     check_options() or pod2usage(2);
 
-    if (defined $OPTS{'user'} && $OPTS{'user'} ne 'root') {
-        $OPTS{'user'} = user($OPTS{'user'})
-    }
-    if (defined $OPTS{'without'}) {
-        $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
-    }
-
     unless ($OPTS{'cron'} || $OPTS{'scripts'}) {
         SpamReport::Tracking::Scripts::disable()
     }
@@ -3328,6 +3321,12 @@ sub main {
     }
     for (@OPTS_OVERRIDE) {
         $data->{'OPTS'}{$_} = $OPTS{$_}
+    }
+    if (defined $OPTS{'user'} && $OPTS{'user'} ne 'root') {
+        $OPTS{'user'} = user($OPTS{'user'})
+    }
+    if (defined $OPTS{'without'}) {
+        $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
     }
 
     if ($OPTS{'cron'}) {
