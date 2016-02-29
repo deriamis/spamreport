@@ -3579,6 +3579,8 @@ Options:
 
                 | --logins              : print login report
                 | --forwarders          : print forwarder reporter
+                | --scripts             : print scripts report
+                | --md5 <md5sum>         : print details about a script md5sum
 
     -w          | --without=<u1 u2 ..>  : remove space-separated users' email before reporting
     -f          | --full                : don't remove ticketed users' email before reporting
@@ -3603,11 +3605,21 @@ Options:
 
 Usage:
 
-    spamreport              # get a report.  if crondata is fresh, it is used
-    spamreport -u <user>    # get user report.  fulldata is used if present
-    spamreport --cron       # refresh crondata
-    spamreport --update     # get fulldata and save it
-    spamreport --latest     # get a report based on the last-saved fulldata
+    spamreport [--full]
+    spamreport -u <user> [--hourly]
+    spamreport -u <reseller> -r
+    spamreport -u root
+
+    spamreport --logins [--full]
+    spamreport --forwarders [--full]
+    spamreport --scripts [--full]
+    spamreport --md5 <md5sum>
+
+    spamreport --without "baduser boringuser checkeduser" [...]
+
+    spamreport --cron     # update previous-days' cache (cache used by default)
+    spamreport --update   # update today's cache (cache ignored by default)
+    spamreport --latest   # use today's cache
 
 Indicator key:
 
