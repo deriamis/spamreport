@@ -2931,7 +2931,7 @@ sub check_options {
     # 2. ensure that the directory is owned by root
     # 3. ensure that created files don't have group or other perms
     #    (and make them non-executable for root as well)
-    for ($OPTS{'dump'}) {
+    for (defined($OPTS{'dump'}) ? $OPTS{'dump'} : ()) {
         my $d;
         if (-d $_) { $d = $_ }
         elsif (m,^(/.*)/[^/]+$, && -d $1) { $d = $1 }
