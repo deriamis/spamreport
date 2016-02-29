@@ -2598,6 +2598,7 @@ sub analyze_queued_mail_data {
         for (qw(source auth_id ident auth_sender sender sender_domain)) {
             next if $_ eq 'sender' && $email->{sender} eq 'mailer-daemon';
             next if $_ eq 'ident' && $email->{ident} eq 'mailnull';
+            next if $_ eq 'source' && $email->{source} =~ /^gateway\d+\.websitewelcome\.com$/;
             $data->{'queue_top'}{$_}{$email->{$_}}++ if defined $email->{$_}
         }
         for my $field (qw(recipient_domains recipient_users)) {
