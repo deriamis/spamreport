@@ -734,6 +734,9 @@ Searching $hours hours from [$start_time] to [$end_time] ...
 END_INFO
 }
 
+sub width ($\$) { ${$_[1]} = length($_[0]) if ${$_[1]} < length($_[0]) }
+sub setmax ($\$) { ${$_[1]} = $_[0] if ${$_[1]} < $_[0] }
+
 sub email_search_results {
     if ( exists $data->{'logins'} and scalar keys %{ $data->{'logins'} } > 0 ) {
         print "\nFound creation time(s) for:\n";
@@ -788,8 +791,8 @@ sub print_forwarder_abuse {
 
     my @width = (0, 0);
     for (@abuse) {
-        $width[0] = length($_->[1]) if length($_->[1]) > $width[0];
-        $width[1] = length($_->[0]) if length($_->[0]) > $width[1];
+        width $_->[1] => $width[0];
+        width $_->[0] => $width[1];
     }
     for (@abuse) {
         printf "%$width[0]d %.1f%% %$width[0]s",
@@ -828,12 +831,11 @@ sub print_script_report {
     my $time = time();
     my $total = 0; for (values %$latest) { $total += $_->{'count'} }
     for (keys %$latest) {
-        $widths[0] = length($latest->{$_}{'count'}) if length($latest->{$_}{'count'}) > $widths[0];
-        $widths[1] = length($latest->{$_}{'ips'}) if length($latest->{$_}{'ips'}) > $widths[1];
-        $widths[2] = length($latest->{$_}{'ip16'}) if length($latest->{$_}{'ip16'}) > $widths[2];
-        $widths[3] = length(keys(%{$latest->{$_}{'geo'}})) if length(keys(%{$latest->{$_}{'geo'}})) > $widths[3];
-        $widths[4] = length(keys(%{$latest->{$_}{'path_variations'}})) if length(keys(%{$latest->{$_}{'path_variations'}})) > $widths[4];
-        $widths[5] = length(keys(%{$latest->{$_}{'file_variations'}})) if length(keys(%{$latest->{$_}{'file_variations'}})) > $widths[4];
+        width $latest->{$_}{'count'} => $widths[0];
+        width $latest->{$_}{'ips'} => $widths[1];
+        width scalar(keys(%{$latest->{$_}{'geo'}})) => $widths[2];
+        width scalar(keys(%{$latest->{$_}{'path_variations'}})) => $widths[3];
+        width scalar(keys(%{$latest->{$_}{'file_variations'}})) => $widths[4];
     }
     my @scripts = sort { $latest->{$b}{'count'} <=> $latest->{$a}{'count'} } keys %$latest;
     my $omitted = @scripts;
@@ -892,24 +894,14 @@ sub analyze_mailboxes {
     }
 }
 
-sub widths {
-    my ($h, $total) = (shift, shift);
-    my @width = (0, 0);
-    for (@_) {
-        $width[0] = length($h->{$_}) if $h->{$_} > $width[0];
-        $width[1] = length(sprintf "%.1f", 100*$h->{$_}/$total) if length(sprintf "%.1f", $h->{$_}) > $width[1]
-    }
-    @width
-}
-
 sub percent_report {
     my ($h, $total, $limit, $title, $discarded, $annotate) = @_;
     return unless $total;
     my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
     my @width = (0, 0);
     for (@list) {
-        $width[0] = length($h->{$_}) if $h->{$_} > $width[0];
-        $width[1] = length(sprintf "%.1f", 100*$h->{$_}/$total) if length(sprintf "%.1f", $h->{$_}) > $width[1]
+        width $h->{$_} => $width[0];
+        width sprintf("%.1f", 100*$h->{$_}/$total) => $width[1];
     }
 
     $discarded = sprintf(" (incl. %s emails discarded for hitting 500/hour limits)", commify($discarded))
@@ -997,10 +989,10 @@ sub print_auth_mismatch {
             $data->{'auth_mismatch'}{$_}{'count'},
             $data->{'auth_mismatch'}{$_}{'who'}
         );
-        $widths[0] = $c if $c > $widths[0];
-        $widths[1] = $i if $i > $widths[1];
-        $widths[2] = $u if $u > $widths[2];
-        $widths[3] = $s if $s > $widths[3];
+        setmax $c => $widths[0];
+        setmax $i => $widths[1];
+        setmax $u => $widths[2];
+        setmax $s => $widths[3];
     }
     for (sort { $data->{'auth_mismatch'}{$b}{'count'} <=>
                 $data->{'auth_mismatch'}{$a}{'count'} }
@@ -1134,8 +1126,8 @@ sub print_recipient_results {
     my @widths = (0, 0);
     for (values %{$data->{'suspects'}{'num_recipients'}}) {
         my ($em, $ad) = (length($_->{'emails'}), length($_->{'addresses'}));
-        $widths[0] = $em if $em > $widths[0];
-        $widths[1] = $ad if $ad > $widths[1];
+        setmax $em => $widths[0];
+        setmax $ad => $widths[1];
     }
     
     my %h = %{$data->{'suspects'}{'num_recipients'}};
@@ -1172,8 +1164,8 @@ sub print_script_results {
     my @width = (0, 0);
     for (@r) {
         my $frac = length(sprintf "%.1f", 100*$_->[1]/$_->[2]);
-        $width[0] = length($_->[1]) if length($_->[1]) > $width[0];
-        $width[1] = $frac if $frac > $width[1]
+        width $_->[1] => $width[0];
+        setmax $frac => $width[1];
     }
 
     print "\nResponsibility for @{[commify($scriptdirs)]} script dirs and @{[commify($script)]} scripts\n";
@@ -1196,9 +1188,9 @@ sub print_login_results {
     for (keys %h) {
         my ($lo, $pr) = map { length($_) } ($h{$_}{'total_logins'}, scalar(keys %{$h{$_}{'logins_from'}}));
         my $wh = /\@(.*)/ ? length($h{$_}{'who'} = $data->{'domain2user'}{$1}) : 0;
-        $width[0] = $lo if $width[0] < $lo;
-        $width[1] = $pr if $width[1] < $pr;
-        $width[2] = $wh if $width[2] < $wh;
+        setmax $lo => $width[0];
+        setmax $pr => $width[1];
+        setmax $wh => $width[2];
     }
     for my $login (reverse sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
         my @ips = sort { $h{$login}{'logins_from'}{$b} <=> $h{$login}{'logins_from'}{$a} } keys %{$h{$login}{'logins_from'}};
@@ -1456,10 +1448,10 @@ sub user_ticket_report {
         }
     }
     for (@tickets) {
-        $widths[0] = length($_->[0]) if length($_->[0]) > $widths[0];
-        $widths[1] = length($_->[1]) if length($_->[1]) > $widths[1];
-        $widths[2] = length($_->[2]) if length($_->[2]) > $widths[2];
-        $widths[3] = length($_->[3]) if length($_->[3]) > $widths[3];
+        width $_->[0] => $widths[0];
+        width $_->[1] => $widths[1];
+        width $_->[2] => $widths[2];
+        width $_->[3] => $widths[3];
     }
     for (sort { $a->[4] <=> $b->[4] } @tickets) {
         $r .= sprintf("%s%s%$widths[1]s$NULL : %$widths[2]s -> %$widths[3]s : %s\n",
