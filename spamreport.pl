@@ -34,6 +34,7 @@ use Storable qw(lock_store lock_retrieve);
 use POSIX qw(strftime);
 
 use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
+use vars qw($logpath $cronpath);
 $VERSION = '2016022601';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
@@ -41,8 +42,8 @@ $data = {};
 $MAX_RETAINED = 4;
 $loadcronfail = '';
 
-my $logpath = "/opt/hgmods/logs/spamreport.dat";
-my $cronpath = "/opt/hgmods/logs/spamreportcron.dat";
+$logpath = "/opt/hgmods/logs/spamreport.dat";
+$cronpath = "/opt/hgmods/logs/spamreportcron.dat";
 
 sub loadcron {
     my ($path) = @_;
@@ -721,8 +722,13 @@ sub head_info {
 SpamReport.pl - Report suspicious mail activity
 Written By: Ryan Egesdahl and Julian Fondren
 
-Running: $sections
-
+Operation: $OPTS->{'op'}
+Load: @{[$OPTS->{'load'} || '(nothing)']}
+Want: @{[join " ", sort map { /_(.*)/; $1 } grep { /^want_/ && $OPTS->{$_} } keys %$OPTS]}
+@{[$OPTS->{'op'} ne 'report' ? '' :
+    ("Report: " . ($OPTS->{'report'} ne 'summary' ? $OPTS->{'report'} :
+    ("summary (" . join(" ", sort map { /_(.*)/; $1 } grep { /^with_/ && $OPTS->{$_} } keys %$OPTS) . ")"))
+    . "\n")]}
 Searching $hours hours from [$start_time] to [$end_time] ...
 
 END_INFO
@@ -1275,8 +1281,9 @@ sub analyze_user_results {
     my %recip;
     my %subject;
     my $tests = \%user_tests;
-    $tests = \%root_tests if $user eq 'root';
-    if ($isreseller) {
+    if ($user eq 'root') {
+        $tests = \%root_tests
+    } elsif ($isreseller) {
         $tests = \%reseller_tests;
         $tests->{'set_resolds'}(@{$data->{'owner2user'}{$user}});
     }
@@ -1411,8 +1418,8 @@ PHP
 {
     my $time = time();
     my %units = (
-        undef => {days => " days", hours => " hours"},
-        1     => {days => "d", hours => "h"}
+        0 => {days => " days", hours => " hours"},
+        1 => {days => "d", hours => "h"}
     );
     sub ago {
         my $delta = ($time - $_[0]) / (24 * 3600);
@@ -1434,13 +1441,17 @@ sub user_ticket_report {
         my @t = SpamReport::Tracking::Suspensions::tickets($u);
         next unless @t;
         for my $t (@t) {
-            if ($data->{'suspensions'}{$u}{$t}{'enable'}) {
-                push @tickets, [$u, $t, (map { ago($data->{'suspensions'}{$u}{$t}{$_}) . " ago" } qw(enable disable)),
+            if ($data->{'suspensions'}{$u}{$t}{'enable'} && $data->{'suspensions'}{$u}{$t}{'disable'}) {
+                push @tickets, [$u, $t, (map { ago($data->{'suspensions'}{$u}{$t}{$_}, 0) . " ago" } qw(enable disable)),
                                 $data->{'suspensions'}{$u}{$t}{'disable'}]
             }
-            else {
-                push @tickets, [$u, $t, ago($data->{'suspensions'}{$u}{$t}{'disable'}) . " ago", '', 
+            elsif ($data->{'suspensions'}{$u}{$t}{'disable'}) {
+                push @tickets, [$u, $t, ago($data->{'suspensions'}{$u}{$t}{'disable'}, 0) . " ago", '', 
                                 $data->{'suspensions'}{$u}{$t}{'disable'}]
+            }
+            else { # enable only --> disable predates abusetool logs
+                push @tickets, [$u, $t, '(prehistory)', ago($data->{'suspensions'}{$u}{$t}{'enable'}, 0) . " ago",
+                                $data->{'suspensions'}{$u}{$t}{'enable'}]
             }
         }
     }
@@ -2404,7 +2415,6 @@ my ($dubious_domains) = map { qr/^(?:$_)$/i } join "|", map { quotemeta $_ } (
 # this subroutine performs no stats at all.
 # the time range checks are dropped: if it's in the queue, it's of interest
 sub email_header_files {
-    my ($max_queue) = @_;
     my $queue_dir = '/var/spool/exim/input';
     my @headers;
     opendir my $d1, $queue_dir or die "Unable to open $queue_dir : $!";
@@ -2414,7 +2424,6 @@ sub email_header_files {
         for (readdir($d2)) {
             if (/-H$/) {
                 push @headers, "$queue_dir/$subdir/$_";
-                last QUEUES if $max_queue && @headers >= $max_queue;
             }
         }
         closedir $d2;
@@ -2424,12 +2433,10 @@ sub email_header_files {
 }
 
 sub parse_queued_mail_data {
-    my ($start_time, $end_time, $max_queue) = @_;
+    my ($start_time, $end_time) = @_;
 
-    my @new_mail = email_header_files($max_queue);
+    my @new_mail = email_header_files();
     for my $i (0..$#new_mail) {
-        last if $max_queue && $i >= $max_queue;
-    
         my $line_no = 0;
         my $tree_start = 0;
         my $eod = 0;
@@ -2971,17 +2978,44 @@ my %OPTS = (
     'start_time'    => 0,
     'end_time'      => scalar CORE::localtime($now),
     'timespec'      => '',
-    'search_create' => undef,
-    'max_queue'     => 100000,
-    'check_queue'   => 1,
-    'check_dbs'     => 1,
-    'run_sections'  => undef,
     'read_lines'    => 10000,
     'r_cutoff'      => 1.0,
     'hourly_report' => undef,
+    'full'          => undef,
+    'dump'          => undef,
+
+    'report'        => 'summary',
+    # other values: user, script, md5, logins, forwarders
+
+    # summary categories
+    'with_queue'    => 1,
+    'with_scripts'  => 1,
+    'with_mail'     => 1,
+    'with_auth'     => 1,
+    'with_forward'  => 1,
+
+    # work categories
+    'want_queue'    => 0,
+    'want_maillog'  => 0,
+    'want_eximlog'  => 0,
+    'want_scripts'  => 0,
+    'want_eximdb'   => 0,
+
+    # operation modes
+    'op'            => 'report',
+    # other values: 'cron', 'update'
+    
+    # data modes
+    'load'          => 'cron',
+    # other values: 'cache', undef
 );
 
-my @OPTS_OVERRIDE = qw(hourly_report r_cutoff reseller user without full);
+END {
+    DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
+}
+
+my %SAVED_OPTS = map { ($_, 1) } qw(search_hours start_time end_time timespec read_lines);
+my @OPTS_OVERRIDE = grep { !exists $SAVED_OPTS{$_} } keys %OPTS;
 
 my $hostname = hostname_long();
 my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
@@ -2996,36 +3030,43 @@ sub check_options {
     my $result = GetOptions(
         'start|s=s'   => \$OPTS{'start_time'},
         'end|e=s'     => \$OPTS{'end_time'},
-        'max|m|n:i'   => \$OPTS{'max_queue'},
         'hours|h=i'   => \$OPTS{'search_hours'},
 #        'time|t=s'    => \$OPTS{'timespec'},
-        'current!'    => \$check_queue,
-        'create|c=s@' => \$OPTS{'search_create'},
-        'dbs!'        => \$OPTS{'check_dbs'},
-        'read|r=i'    => \$OPTS{'read_lines'},
+        'read=i'      => \$OPTS{'read_lines'},
         'uncached'    => \$OPTS{'uncached'},  # experimental, undocumented
-        'cron'        => \$OPTS{'cron'},
-        'update'      => \$OPTS{'update'},
+        'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
+
         'without|w=s' => \$OPTS{'without'},
         'full|f'      => \$OPTS{'full'},
-        'load=s'      => \$OPTS{'load'},
-        'loadcron=s'  => \$OPTS{'loadcron'},
-        'user|u=s'    => \$OPTS{'user'},
-        'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
-        'md5scripts'  => \$OPTS{'scripts'},
-        'scripts'     => \$OPTS{'scriptreport'},
-        'md5=s'       => \$OPTS{'scriptmd5report'},
-        'logins'      => \$OPTS{'logins'},
-        'forwarders'  => \$OPTS{'forwarders'},
-        'dump=s'      => \$OPTS{'dump'},
-        'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
+        'user|u=s'    => sub { $OPTS{'report'} = 'user'; $OPTS{'load'} = 'cache'; $OPTS{'user'} = $_[1]; $OPTS{'full'} = 1 },
         'hourly'      => \$OPTS{'hourly_report'},
         'reseller|r'  => \$OPTS{'reseller'},
-        'latest'      => \$OPTS{'latest'},
+
+        'scripts'     => sub { $OPTS{'report'} = 'script'; $OPTS{'load'} = undef },
+        'md5=s'       => sub { $OPTS{'report'} = 'md5'; $OPTS{'scriptmd5report'} = $_[1]; $OPTS{'load'} = undef },
+        'logins'      => sub { $OPTS{'report'} = 'logins' },
+        'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
+
+        'load=s'      => sub { $OPTS{'load'} = 'cache'; $SpamReport::Data::logpath = $_[1] },
+        'loadcron=s'  => sub { $OPTS{'load'} = 'cron'; $SpamReport::Data::cronpath = $_[1] },
+        'dump=s'      => \$OPTS{'dump'},
+        'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
+
+        'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
+        'update'      => sub { $OPTS{'op'} = 'update' },
+        'latest'      => sub { $OPTS{'load'} = 'cache' },
+
         'help|?'      => sub { HelpMessage() },
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
         'version'     => sub { VersionMessage(module_versions()) },
     );
+
+    $OPTS{'want_queue'} = 1 if $OPTS{'op'} ne 'cron' && $OPTS{'with_queue'};
+    $OPTS{'want_maillog'} = 1 if $OPTS{'op'} ne 'report' or $OPTS{'report'} eq 'logins';
+    $OPTS{'want_eximlog'} = 1 unless $OPTS{'report'} eq 'md5'
+                                  or $OPTS{'report'} eq 'logins';
+    $OPTS{'want_scripts'} = 1 if $OPTS{'want_eximlog'} or $OPTS{'report'} eq 'md5';
+    # eximdb: unused
 
     if ( $OPTS{'start_time'} && $OPTS{'start_time'} !~ m/^\d+$/ ) {
         $OPTS{'start_time'} = str2time($OPTS{'start_time'}) or die "Invalid start time";
@@ -3065,35 +3106,6 @@ sub check_options {
 
     die "Invalid number of lines to read: " . $OPTS{'read_lines'} if ( $OPTS{'read_lines'} <= 0 );
 
-    push @{ $OPTS{'run_sections'} }, 'check_dbs' if $OPTS{'check_dbs'};
-    push @{ $OPTS{'run_sections'} }, 'check_queue' if $check_queue || $OPTS{'max_queue'};
-    push @{ $OPTS{'run_sections'} }, 'check_emails', 'check_logins' unless $check_queue;
-
-    if ( $OPTS{'search_create'} ) {
-        @{ $OPTS{'search_create'} } = split /,/, join(',', @{ $OPTS{'search_create'} });
-        $OPTS{'run_sections'} = [ 'email_create' ];
-    }
-
-    $OPTS{'max_queue'} = 0 if $check_queue;
-    $OPTS{'check_queue'} = $check_queue;
-
-    if ($OPTS{'latest'} and $OPTS{'load'}) {
-        die "only zero or one of --latest and --load can be provided"
-    }
-    if (($OPTS{'latest'} or $OPTS{'load'}) and $OPTS{'update'}) {
-        die "--latest/--load is incompatible with --update (we wouldn't have any new data to save)"
-    }
-    $OPTS{'latest'} = 1 if $OPTS{'user'} and !$OPTS{'load'} and !$OPTS{'uncached'};
-    if ($OPTS{'scriptreport'} || defined($OPTS{'scriptmd5report'})) {
-        $OPTS{'uncached'} = 1;
-        $OPTS{'run_sections'} = []
-    }
-
-
-    if ($OPTS{'latest'} or $OPTS{'load'}) {
-        $OPTS{'run_sections'} = []
-    }
-
 
     my (%dovecot, %exim);
     for (my $i = $OPTS{'end_time'}; $i >= $OPTS{'start_time'}; $i -= 3600 * 24) {
@@ -3112,10 +3124,6 @@ sub check_options {
     }
     $OPTS{'dovecot_postdays'} = \%dovecotpost;
     $OPTS{'exim_postdays'} = \%eximpost;
-
-    $OPTS{'full'} = 1 if $OPTS{'user'};
-
-    die "--logins is incompatible with --user" if $OPTS{'user'} and $OPTS{'logins'};
 
     return $result;
 }
@@ -3269,7 +3277,7 @@ sub parse_exim_dbs {
 }
 
 sub parse_exim_queue {
-    SpamReport::Exim::parse_queued_mail_data($OPTS{'start_time'}, $OPTS{'end_time'}, $OPTS{'max_queue'});
+    SpamReport::Exim::parse_queued_mail_data($OPTS{'start_time'}, $OPTS{'end_time'});
 }
 
 sub parse_logs {
@@ -3336,14 +3344,6 @@ sub setup_cpanel {
         'alias:dest'  => \&SpamReport::Cpanel::map_valiases,
     );
 
-    %sections = (
-        'email_create' => \&parse_cpanel_logs,
-        'check_dbs'    => \&parse_exim_dbs,
-        'check_queue'  => \&parse_exim_queue,
-        'check_emails' => \&parse_exim_logs,
-        'check_logins' => \&parse_dovecot_logs,
-    );
-
     %{ $new } = map {
 
         my $data_path = $_ eq 'user:domain' ? $userdomains_path
@@ -3362,7 +3362,6 @@ sub setup_cpanel {
     } keys %factories;
 
     $data->{$_} = $new->{$_} for keys %$new;
-    SpamReport::Cpanel::offserver_forwarders();
 
     1;
 }
@@ -3411,106 +3410,120 @@ sub main {
     STDOUT->autoflush(1);
     STDERR->autoflush(1);
 
+    die "This script only supports cPanel at this time."
+        unless -r '/etc/userdomains' && -d '/etc/valiases';
     check_options() or pod2usage(2);
 
-    unless ($OPTS{'cron'} || $OPTS{'scripts'} || $OPTS{'scriptreport'} || defined($OPTS{'scriptmd5report'})) {
-        SpamReport::Tracking::Scripts::disable()
-    }
-    if ($OPTS{'uncached'}) {
-        SpamReport::Data::disable();
-    }
+    $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
+        if defined $OPTS{'without'};
+    $OPTS{'user'} = user($OPTS{'user'})
+        if $OPTS{'report'} eq 'user' && $OPTS{'user'} ne 'root';
 
+    SpamReport::Tracking::Scripts::disable() unless $OPTS{'want_scripts'};
+    SpamReport::Data::disable() if $OPTS{'uncached'};
     SpamReport::Tracking::Scripts::load();
 
-    unless ($OPTS{'latest'} or $OPTS{'cron'}) {
-        SpamReport::Data::loadcron($OPTS{'loadcron'});
-        $loadedcron = 1 if keys %$data;
-        warn "${RED}daily cache not not loaded! $SpamReport::Data::loadcronfail\n"
-           . "This run will take much longer than normal$NULL\n"
-            unless $loadedcron;
+    if ($OPTS{'load'} eq 'cron') {
+        SpamReport::Data::loadcron();
+        if (keys %$data) {
+            $loadedcron = 1;
+        } else {
+            warn "${RED}daily cache not not loaded! $SpamReport::Data::loadcronfail\n"
+               . "This run will take much longer than normal$NULL\n"
+        }
     }
     DumpFile($OPTS{'dump'}.".cron", $data) if $loadedcron && $OPTS{'dump'};
 
-    if ($OPTS{'load'} or $OPTS{'latest'}) {
-        SpamReport::Data::load($OPTS{'load'}) if $OPTS{'load'};
-        SpamReport::Data::load() if $OPTS{'latest'};
-        SpamReport::Output::head_info($data->{'OPTS'});
-    } else {
-        die "This script only supports cPanel at this time." if (not -r '/etc/userdomains' && -d '/etc/valiases');
-        setup_cpanel();
-        SpamReport::Output::head_info(\%OPTS);
-        $data->{'OPTS'} = \%OPTS;
-    }
-    for (@OPTS_OVERRIDE) {
-        $data->{'OPTS'}{$_} = $OPTS{$_}
-    }
-    if (defined $OPTS{'user'} && $OPTS{'user'} ne 'root') {
-        $OPTS{'user'} = user($OPTS{'user'})
-    }
-    if (defined $OPTS{'without'}) {
-        $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
-    }
+    $data->{'OPTS'} = \%OPTS;
 
-    if ($OPTS{'cron'}) {
-        $OPTS{'datelimit'} = 'not today';
-        for my $section ( @{ $OPTS{'run_sections'} } ) {
-            next if $section eq 'check_queue';
-            $sections{$section}();
+    if ($OPTS{'op'} eq 'cron' or $OPTS{'op'} eq 'update') {
+        SpamReport::Output::head_info(\%OPTS);
+        setup_cpanel();
+        if ($OPTS{'op'} eq 'cron' || !$loadedcron) {
+            $OPTS{'datelimit'} = 'not today';
+            parse_exim_dbs() if $OPTS{'want_eximdb'};
+            parse_exim_logs() if $OPTS{'want_eximlog'};
+            parse_dovecot_logs() if $OPTS{'want_maillog'};
+        }
+        if ($OPTS{'op'} eq 'update') {
+            SpamReport::Data::savecron() unless $loadedcron;
+            $OPTS{'datelimit'} = 'only today' if $loadedcron;
+            parse_exim_dbs() if $OPTS{'want_eximdb'};
+            parse_exim_logs() if $OPTS{'want_eximlog'};
+            parse_exim_queue() if $OPTS{'want_queue'};
+            parse_dovecot_logs() if $OPTS{'want_maillog'};
+            DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
         }
         SpamReport::Cpanel::young_users();
         SpamReport::Tracking::Scripts::save();
-        SpamReport::Data::exitsavecron();
+        SpamReport::Data::exitsavecron() if $OPTS{'op'} eq 'cron';
+        SpamReport::Cpanel::offserver_forwarders();
+        SpamReport::Data::save();
+        exit
     }
-    elsif ($loadedcron) {
-        $OPTS{'datelimit'} = 'only today';
-        for my $section ( @{ $OPTS{'run_sections'} } ) {
-            $sections{$section}();
-        }
-    }
-    else {
-        for my $section ( @{ $OPTS{'run_sections'} } ) {
-            $sections{$section}();
-        }
-        SpamReport::Cpanel::young_users();
-        SpamReport::Data::savecron();
-    }
-    DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
-    SpamReport::Data::save() unless $OPTS{'latest'};
 
+    # op: report
+
+    SpamReport::Output::head_info($data->{'OPTS'});
+
+    if ($OPTS{'report'} eq 'script' or $OPTS{'report'} eq 'md5') {
+        # no need to load data
+    } elsif ($OPTS{'load'} eq 'cache') {
+        SpamReport::Data::load();
+        $data->{'OPTS'}{$_} = $OPTS{$_} for @OPTS_OVERRIDE;
+    } else {
+        setup_cpanel();
+        SpamReport::Cpanel::offserver_forwarders();
+        $OPTS{'datelimit'} = 'only today' if $loadedcron;
+        parse_exim_dbs() if $OPTS{'want_eximdb'};
+        parse_exim_queue() if $OPTS{'want_queue'};
+        parse_exim_logs() if $OPTS{'want_eximlog'};
+        parse_dovecot_logs() if $OPTS{'want_maillog'};
+        SpamReport::Data::save() unless $OPTS{'load'} eq 'cache';
+        SpamReport::Tracking::Scripts::save();
+    }
     SpamReport::Tracking::Suspensions::load();
+    SpamReport::GeoIP::init();
 
-    if (!$OPTS{'update'}) {
-        my @to_purge;
-        push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
-        push @to_purge, SpamReport::Tracking::Suspensions::ticketed_users() unless $OPTS{'full'};
-        purge(@to_purge) if @to_purge;
-
-        SpamReport::GeoIP::init();
-
-        if ($OPTS{'forwarders'}) {
-        } elsif ($OPTS{'scriptreport'}) {
-        } elsif ($OPTS{'logins'}) {
-            SpamReport::Maillog::analyze_logins();
-            SpamReport::Output::print_login_results();
-        } else {
-            SpamReport::Output::analyze_results();
-        }
-
-        if ($OPTS{'forwarders'}) {
-            SpamReport::Output::print_forwarder_abuse();
-        } elsif ($OPTS{'scriptreport'}) {
-            SpamReport::Output::print_script_report();
-        } elsif (defined $OPTS{'scriptmd5report'}) {
-            SpamReport::Output::print_script_info($OPTS{'scriptmd5report'})
-        } elsif ($OPTS{'user'}) {
-            SpamReport::Output::analyze_user_results($OPTS{'user'}, $OPTS{'reseller'});
-            SpamReport::Output::print_user_results($OPTS{'user'}, $OPTS{'reseller'});
-        } elsif (!$OPTS{'logins'}) {
-            SpamReport::Output::print_results() unless $OPTS{'cron'};
-        }
+    my @to_purge;
+    push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
+    push @to_purge, SpamReport::Tracking::Suspensions::ticketed_users() unless $OPTS{'full'};
+    purge(@to_purge) if @to_purge;
+    
+    if ($OPTS{'report'} eq 'user') {
+        my $isreseller = $OPTS{'reseller'} || $OPTS{'user'} eq 'root';
+        SpamReport::Output::analyze_user_results($OPTS{'user'}, $isreseller);
+        SpamReport::Output::print_user_results($OPTS{'user'}, $isreseller);
+        exit;
     }
-    DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
-    SpamReport::Tracking::Scripts::save();
+
+    if ($OPTS{'report'} eq 'script') {
+        SpamReport::Output::print_script_report();
+        exit;
+    }
+
+    if ($OPTS{'report'} eq 'md5') {
+        SpamReport::Output::print_script_info($OPTS{'scriptmd5report'});
+        exit
+    }
+
+    if ($OPTS{'report'} eq 'logins') {
+        SpamReport::Maillog::analyze_logins();
+        SpamReport::Output::print_login_results(); 
+        exit;
+    }
+
+    if ($OPTS{'report'} eq 'forwarders') {
+        SpamReport::Cpanel::offserver_forwarders();
+        SpamReport::Output::print_forwarder_abuse();
+        exit;
+    }
+
+    die "Invalid \$OPTS{'report'} : $OPTS{'report'}"
+        unless $OPTS{'report'} eq 'summary';
+
+    SpamReport::Output::analyze_results(); 
+    SpamReport::Output::print_results(); 
 }
 
 sub module_versions {
@@ -3567,12 +3580,6 @@ Options:
         (default: 72 hours)
         (NB. spamreport has a minimum granularity of one calendar day)
 
-                | --current             : check the exim queue
-    -m          | --max                 : check the entire queue
-    -n <limit>  | --max=<limit>         : check up to # emails in the queue
-
-                | --dbs                 : check exim databases
-
     -u <user>   | --user=<user>         : report on a user, implies --latest
                 | --hourly              : add emails/hour to --user output
     -r          | --reseller            : include user's resold accounts
@@ -3596,8 +3603,6 @@ Options:
                                           $path.cron  : --cron seeded data
                                           $path.scan  : pre-analysis data
                                           $path.post  : post-analysis data
-                | --md5cripts           : track IPs hitting email scripts
-                                          (implied by --cron)
 
                 | --help
                 | --man
