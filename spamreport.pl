@@ -3573,30 +3573,30 @@ Options:
 
                 | --dbs                 : check exim databases
 
-    -u <user>   | --user=<user>         : report on a user, implies --latest unless --load is present
-                | --hourly              : add an emails/hour section to --user output
-    -r          | --reseller            : report on all of user's resold accounts
+    -u <user>   | --user=<user>         : report on a user, implies --latest
+                | --hourly              : add emails/hour to --user output
+    -r          | --reseller            : include user's resold accounts
 
                 | --logins              : print login report
                 | --forwarders          : print forwarder reporter
                 | --scripts             : print scripts report
-                | --md5 <md5sum>         : print details about a script md5sum
+                | --md5 <md5sum>        : print details about a script md5sum
 
-    -w          | --without=<u1 u2 ..>  : remove space-separated users' email before reporting
-    -f          | --full                : don't remove ticketed users' email before reporting
+    -w          | --without=<u1 u2 ..>  : remove users' email before reporting
+    -f          | --full                : don't remove ticketed users' email
 
-                | --cron                : gather crondata and save it, without analysis or output
-                | --update              : gather fulldata and save it.  uses crondata if fresh
+                | --cron                : gather crondata, save it, and exit
+                | --update              : gather fulldata, save it, and exit
                 | --latest              : use fulldata if present
                 | --load=path/to/file   : load data from file
                 | --loadcron=/to/file   : load crondata from file
                 | --keep=<number>       : preserve # of rotated logs
 
                 | --dump=path/to/file   : save (human-readable) YAML files to
-                                          $path.cron  : --cron seeded data, if one was loaded
-                                          $path.scan  : pre-analysis data, after scans are done
+                                          $path.cron  : --cron seeded data
+                                          $path.scan  : pre-analysis data
                                           $path.post  : post-analysis data
-                | --md5cripts           : track IPs hitting md5sums of scripts sending email
+                | --md5cripts           : track IPs hitting email scripts
                                           (implied by --cron)
 
                 | --help
@@ -3626,7 +3626,7 @@ Indicator key:
     ABC-12341234.http  | a ticket ID in an active abusetool suspension
     abuse:#            | user was abusetool'd # times in the last 60 days
     security:12h       | ~user/.security was modified $time ago
-    discard:22.3%      | % of user's email that hit the 500/hr limit and was discarded
+    discard:22.3%      | % of user's email that hit the 500/hr limit
 
     seen:              | first root history mention of user within last week
     (user age)         | user was added to cPanel <2 weeks ago
@@ -3696,7 +3696,7 @@ Indicator key:
 =head2 package SpamReport::Output;
 
     Primary output and reporting module.  Of program output, only warnings,
-    errors, progress updates, and ::Data loading messages are outside this module.
+    errors, progress updates, and ::Data loading messages are elsewhere.
 
 =head2 package File::Nonblock;
 
