@@ -3775,7 +3775,6 @@ Options:
                 | --update              : gather fulldata, save it, and exit
                 | --latest              : use fulldata if present
                 | --load=path/to/file   : load data from file
-                | --loadcron=/to/file   : load crondata from file
                 | --keep=<number>       : preserve # of rotated logs
                 | --tag=<tag>           : use tagged instead of default cache
                 | --ls                  : show available cache files
