@@ -3120,10 +3120,9 @@ sub check_options {
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
         'version'     => sub { VersionMessage(module_versions()) },
     );
-
+    # XXX: reports that don't work with cache currently
     if ($OPTS{'load'} eq 'cache' && $OPTS{'report'} eq 'forwarders') {
-        # --update runs don't save maillog
-        $OPTS{'load'} = 'cron'
+        $OPTS{'load'} = 'cron';
     }
     
     $OPTS{'want_queue'} = 1 if $OPTS{'op'} ne 'cron' && $OPTS{'with_queue'};
