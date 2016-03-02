@@ -1286,7 +1286,14 @@ sub print_queue_results {
 my %user_tests = (
     bounce_recipient => sub { exists $_[0]->{'recipient_users'}{$_[1]} },
     bounce_source => sub { exists $_[0]->{'source'}{$_[1]} },
-    who => sub { $_[0]->{'who'} eq $_[1] },
+    who => sub {
+        return 1 if $_[0]->{'who'} eq $_[1];
+        if ($_[1] eq $data->{'domain2user'}{$_[0]->{'sender_domain'}}) {
+            $data->{'crossauth'}{$_[1]}{$_[0]->{'who'}}++;
+            return 1;
+        }
+        undef;
+    },
     path => sub { $_[0] =~ m,^/[^/]+/$_[1]/, }
 );
 my %root_tests = (
@@ -1599,7 +1606,7 @@ Emails found in queue:
 ----------------------
 User: @{[commify($u->{'queued'})]}, Total: @{[commify($data->{'total_queue'})]}
 
-This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.
+This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.@{[scalar(keys(%{$data->{'crossauth'}{$user}})) && "\n${MAGENTA}Some of this user's email may be getting authorized by an another user's credentials.$NULL"]}
 
 
 REPORT
@@ -2691,14 +2698,14 @@ sub parse_exim_mainlog {
             $data->{'mail_ids'}{$mailid}{'recipients'} = \@to if @to;
             $data->{'mail_ids'}{$mailid}{'sender'} = $from;
             my $from_domain;
-            if ($from =~ /\S+?\@(\S+)/) {
+            if ($from =~ /\S+?[\@+](\S+)/) {
                 $from_domain = $1;
                 $data->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
             }
             $data->{'mail_ids'}{$mailid}{'subject'} = $subject;
-            if ($line =~ / A=dovecot_\S+:(\S+\@(\S+))/) {
+            if ($line =~ / A=dovecot_\S+:(\S+(?:[\@+](\S+))?)/) {
                 $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
-                $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2;
+                $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2 if defined $2;
             }
             $data->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
             $data->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
@@ -3035,13 +3042,9 @@ my %OPTS = (
     'search_hours'  => 72,
     'start_time'    => 0,
     'end_time'      => scalar CORE::localtime($now),
-    'timespec'      => '',
+    'time_override' => undef,
     'read_lines'    => 10000,
     'r_cutoff'      => 1.0,
-    'hourly_report' => undef,
-    'full'          => undef,
-    'dump'          => undef,
-    'user'          => undef,
 
     'report'        => 'summary',
     # other values: user, script, md5, logins, forwarders, helos
@@ -3073,8 +3076,7 @@ END {
     DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
 }
 
-my %SAVED_OPTS = map { ($_, 1) } qw(search_hours start_time end_time timespec read_lines);
-my @OPTS_OVERRIDE = grep { !exists $SAVED_OPTS{$_} } keys %OPTS;
+my @SAVED_OPTS = qw(search_hours start_time end_time timespec);
 
 my $hostname = hostname_long();
 my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
@@ -3084,13 +3086,15 @@ my %sections;
 
 sub check_options {
     Getopt::Long::Configure(qw(gnu_getopt auto_version auto_help));
-    my $check_queue;
+    my $time_changed;
+    my $tag_flag;
 
     my $result = GetOptions(
-        'start|s=s'   => \$OPTS{'start_time'},
-        'end|e=s'     => \$OPTS{'end_time'},
-        'hours|h=i'   => \$OPTS{'search_hours'},
+        'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
+        'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
+        'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
 #        'time|t=s'    => \$OPTS{'timespec'},
+        'override|o'  => \$OPTS{'time_override'},
         'read=i'      => \$OPTS{'read_lines'},
         'uncached'    => \$OPTS{'uncached'},  # experimental, undocumented
         'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
@@ -3112,6 +3116,9 @@ sub check_options {
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
 
+        'tag=s'       => sub { $SpamReport::Data::logpath .= ".$_[1]";
+                               $SpamReport::Data::cronpath .= ".$_[1]";
+                               $tag_flag = 1; },
         'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
         'update'      => sub { $OPTS{'op'} = 'update' },
         'latest'      => sub { $OPTS{'load'} = 'cache' },
@@ -3123,6 +3130,24 @@ sub check_options {
     # XXX: reports that don't work with cache currently
     if ($OPTS{'load'} eq 'cache' && $OPTS{'report'} eq 'forwarders') {
         $OPTS{'load'} = 'cron';
+    }
+    if ($OPTS{'op'} eq 'report' && $time_changed) {
+        die "${RED}[FAULT] Non-default times requested without --override flag!$NULL\n",
+             "\n",
+             "* spamreport uses daily and hourly cache to speed up normal usage.\n",
+             "*\n",
+             "* Using non-default times can slow spamreport down by a factor of 60x or more.\n",
+             "*\n",
+             "* If you really mean to do this, pass the --override flag.\n",
+             "*\n",
+             "* (or c.f CREATING NONDEFAULT CACHE in spamreport --man)\n\n"
+            unless $OPTS{'time_override'};
+        $OPTS{'load'} = undef;
+        SpamReport::Data::disable() unless $tag_flag;
+    } elsif ($time_changed) {
+        warn "${RED}[WARN] Saving over default cache with non-default time arguments (did you mean to use --tag?)$NULL\n"
+            unless $tag_flag;
+        $OPTS{'load'} = undef;
     }
     
     $OPTS{'want_queue'} = 1 if $OPTS{'op'} ne 'cron' && $OPTS{'with_queue'};
@@ -3468,6 +3493,13 @@ sub purge {
     }
 }
 
+sub userfy_args {
+    $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
+        if defined $OPTS{'without'};
+    $OPTS{'user'} = user($OPTS{'user'})
+        if $OPTS{'report'} eq 'user' && $OPTS{'user'} ne 'root';
+}
+
 sub main {
     my $loadedcron;
 
@@ -3478,17 +3510,13 @@ sub main {
         unless -r '/etc/userdomains' && -d '/etc/valiases';
     check_options() or pod2usage(2);
 
-    $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
-        if defined $OPTS{'without'};
-    $OPTS{'user'} = user($OPTS{'user'})
-        if $OPTS{'report'} eq 'user' && $OPTS{'user'} ne 'root';
-
     SpamReport::Tracking::Scripts::disable() unless $OPTS{'want_scripts'};
     SpamReport::Data::disable() if $OPTS{'uncached'};
     SpamReport::Tracking::Scripts::load();
 
     if ($OPTS{'load'} eq 'cron') {
         SpamReport::Data::loadcron();
+        $OPTS{$_} = $data->{'OPTS'} for @SAVED_OPTS;
         if (keys %$data) {
             $loadedcron = 1;
         } else {
@@ -3532,11 +3560,15 @@ sub main {
 
     if ($OPTS{'report'} eq 'script' or $OPTS{'report'} eq 'md5') {
         # no need to load data
+        SpamReport::Tracking::Scripts::save();
     } elsif ($OPTS{'load'} eq 'cache') {
         SpamReport::Data::load();
-        $data->{'OPTS'}{$_} = $OPTS{$_} for @OPTS_OVERRIDE;
+        userfy_args();
+        $OPTS{$_} = $data->{'OPTS'} for @SAVED_OPTS;
+        $data->{'OPTS'} = \%OPTS;
     } else {
         setup_cpanel();
+        userfy_args();
         SpamReport::Cpanel::offserver_forwarders();
         $OPTS{'datelimit'} = 'only today' if $loadedcron;
         parse_exim_dbs() if $OPTS{'want_eximdb'};
@@ -3723,6 +3755,83 @@ Indicator key:
     boxtrapper:        | >50% of email has subjects suggesting boxtrapper
   bob@domain.com(IPs)  | mailbox has more than 10 /16 IPs authenticating as it
 
+=head1 CREATING NONDEFAULT CACHE
+
+    The intent is that a once-daily cron will update daily cache, and that a
+    once-hourly cron will update cache over the course of the day, and that
+    most queries can make use the hourly cache to provide useful and timely
+    information about the server's last few days.
+
+    On a VPS or dedicated server, you won't have the cache to use.  On a shared
+    server, you may to perform a series of historical queries -- f.e., get a
+    general report about a week-long period a month ago, and then get a user
+    report from that period.  To speed up multiple queries you can create the
+    cache to use yourself.  So as to not confuse the next admin that comes
+    along (and, potentially, to keep the data for further investigation), you
+    should tag your cache.
+
+    For example:
+
+      # spamreport --start '14 Feb' --end '17 Feb' --update --tag '14-17feb2016'
+
+    This will read files twice, first to create the daily cache and then to
+    create the hourly cache.  Subsequent usage:
+
+      # spamreport --latest --tag '14-17feb2016'
+      # spamreport --latest --tag '14-17feb2016' -u badguy
+      # spamreport --latest --tag '14-17feb2016' -u root
+      # spamreport --latest --tag '14-17feb2016' --without "good1 good2"
+      # spamreport   # a normal run, not using the 14-17feb2016 cache
+
+=head1 EXPLORING ON YOUR OWN
+
+    You can pass spamreport, with --dump, a path to store YAML dumps of most of
+    its data at several stages of operation.  You can then load this YAML with a
+    normal oneliner and perform your own ad-hoc analysis of it, or otherwise
+    explore it in ways not anticipated by spamreport's options.
+
+      # perl spamreport --latest --tag '14-17feb2016' --dump=yaml
+      ...
+      # ls yaml*
+      yaml.post
+  
+      # perl spamreport --dump=dump
+      ...
+      # ls dump*
+      dump.cron  dump.post
+  
+      # egrep '^[^ ]' dump.cron
+      --- 
+      bounce_owner_responsibility: 
+      bounce_responsibility: 
+      domain_responsibility: 
+      hourly_volume: 
+      logins: 
+      mail_ids: 
+      mailbox_responsibility: 
+      outscript: 
+      owner_responsibility: 
+      responsibility: 
+      scriptdirs: 
+      total_bounce: 10755
+      total_outgoing: 16286
+      # egrep -c '^[^ ]' dump.post
+      40
+
+    FILE.post is saved right before spamreport halts, and contains the most
+    information.  It can also include analysis performed on behalf of the flags
+    given along with the --dump flag.
+
+      # perl -MYAML::Syck=LoadFile -le '$email = LoadFile("dump.post")->{"mail_ids"}; print $_->{"subject"} for values %$email'|grep -i paypal|sort|uniq -c|sort -nr|head
+         8000 [Paypal-lnc] - Account Has Closed !
+           15 [Team Paypal] : Your Account has limited
+           12 [Paypal-lnc] : Account Has Closed !
+            5 [Paypal-lnc] : Update Your Account !
+            4 [Paypal-lnc] - Account Has Limeted !
+            1 Paypal - Account Has Limeted !
+      # perl -MYAML::Syck=LoadFile -le 'print join " " => sort keys %{LoadFile("dump.post")->{'young_users'}}'
+ab7029 ab7266 adeola72 bodynas cameranclick cjzgproducciones done donex dpianes effacorg emege fassad75 ff ff1 ff2 ff3 ff4 ff5 ff6 fitter handhcom insidenwa jeune jmdproduction kamaracafe kcnasmedia lim lnc matrizbiotech maynaronline modoc nawboraleigh passinglane peakworx polygraphsa prestigetoy producershybrids prologues qashif rangpurstore rdnyc salahox santibibiloni scagrisolutions scamps seand secutronca shakespeares shivpuri speedkills uysys vfiber
+
 =head1 FILES
 
     /opt/hgmods/logs/spamreportcron.dat  (and .1, .2, ...)
@@ -3731,12 +3840,11 @@ Indicator key:
     
     /opt/hgmods/logs/spamreport.dat      (and .1, .2, ...)
 
-        Storable cache of pre-analysis data drom from prior runs
-        and --update runs.
+        Storable cache of pre-analysis data drawn from prior runs.
 
     /opt/hgmods/logs/spamscripts.dat
 
-        YAML cache of script tracking.
+        YAML script tracking data.
 
         "md5sum" -> "ips" -> (ips -> # hits by IP against md5sum)
                     "paths" -> (script paths -> # hits against path)
@@ -3755,8 +3863,7 @@ Indicator key:
 
     Argument handling.  Most flags result in modifications to %OPTS hash, which
     is duplicated in $data->{'OPTS'}, which is what every other package uses
-    instead of %SpamReport::OPTS directly.  When $data->{'OPTS'} is loaded from
-    cache, keys from %OPTS that are in @OPTS_OVERRIDE are then copied to it.
+    instead of %SpamReport::OPTS directly.
 
     Argument sanity checking, "x implies y", and date calculations are in this
     subroutine as well.
