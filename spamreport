@@ -761,8 +761,7 @@ Want: @{[join " ", sort map { /_(.*)/; $1 } grep { /^want_/ && $OPTS->{$_} } key
     ("Report: " . ($OPTS->{'report'} ne 'summary' ? $OPTS->{'report'} :
     ("summary (" . join(" ", sort map { /_(.*)/; $1 } grep { /^with_/ && $OPTS->{$_} } keys %$OPTS) . ")"))
     . "\n")]}
-Searching $hours hours from [$start_time] to [$end_time] ...
-
+@{[$OPTS->{'load'} eq 'no' ? '' : "Searching $hours hours from [$start_time] to [$end_time] ...\n"]}
 END_INFO
 }
 
@@ -3625,17 +3624,19 @@ sub main {
 
     # op: report
 
-    SpamReport::Output::head_info($data->{'OPTS'});
 
     if ($OPTS{'load'} eq 'no') {
         # no need to load data
+        SpamReport::Output::head_info($data->{'OPTS'});
         SpamReport::Tracking::Scripts::save() if $OPTS{'save'};
     } elsif ($OPTS{'load'} eq 'cache') {
         SpamReport::Data::load();
         userfy_args();
         $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
         $data->{'OPTS'} = \%OPTS;
+        SpamReport::Output::head_info($data->{'OPTS'});
     } else {
+        SpamReport::Output::head_info($data->{'OPTS'});
         setup_cpanel();
         userfy_args();
         SpamReport::Cpanel::offserver_forwarders();
