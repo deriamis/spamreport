@@ -775,17 +775,30 @@ sub width ($\$) { ${$_[1]} = length($_[0]) if ${$_[1]} < length($_[0]) }
 sub setmax ($\$) { ${$_[1]} = $_[0] if ${$_[1]} < $_[0] }
 
 sub email_search_results {
-    if ( exists $data->{'logins'} and scalar keys %{ $data->{'logins'} } > 0 ) {
-        print "\nFound creation time(s) for:\n";
-        print join "\n    ", keys %{ $data->{'logins'} };
+    my (@emails) = @_;
 
-        print "\n\nInformation:\n";
-        map {
-            print "    Login:        $_\n";
-            print '    Created on:   ' . localtime($data->{'logins'}{$_}{'created_on'}) . "\n";
-            print '    Created by:   ' . $data->{'logins'}{$_}{'created_by'} . "\n";
-            print '    Created from: ' . $data->{'logins'}{$_}{'created_from'} . "\n\n";
-        } keys %{ $data->{'logins'} };
+    if ( exists $data->{'logins'} and scalar keys %{ $data->{'logins'} } > 0 ) {
+        if ( scalar @emails > 1 ) {
+            map {
+                print "    Login:        $_\n";
+                print '    Created on:   ' . localtime($data->{'logins'}{$_}{'created_on'}) . "\n";
+                print '    Created by:   ' . $data->{'logins'}{$_}{'created_by'} . "\n";
+                print '    Created from: ' . $data->{'logins'}{$_}{'created_from'} . "\n\n";
+            } keys %{ $data->{'logins'} };
+        }
+        else {
+            if ( not exists $data->{'logins'}{$emails[0]} ) {
+                print "\nNot found.\n";
+                return
+            }
+
+            map {
+                print "    Login:        $_\n";
+                print '    Created on:   ' . localtime($data->{'logins'}{$_}{'created_on'}) . "\n";
+                print '    Created by:   ' . $data->{'logins'}{$_}{'created_by'} . "\n";
+                print '    Created from: ' . $data->{'logins'}{$_}{'created_from'} . "\n\n";
+            } $emails[0];
+        }
     }
     else {
         print "\nNot found.\n";
@@ -2995,6 +3008,7 @@ use vars qw/$VERSION/;
 $VERSION = '2016022601';
 
 use Time::Local;
+use File::Basename;
 use Regexp::Common qw/ Maillog /;
 use Socket qw(inet_aton inet_ntoa);
 use Sys::Hostname::Long qw(hostname_long);
@@ -3158,15 +3172,42 @@ my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
 my %factories;
 my %sections;
 
+sub run_ecpp {
+    Getopt::Long::Configure(qw(gnu_getopt auto_version auto_help));
+    my $result;
+    my $time_changed;
+
+    $OPTS{'report'} = 'user';
+    $OPTS{'load'} = 'cache';
+    $OPTS{'user'} = $ARGV[0];
+    $OPTS{'full'} = 1;
+    $result = GetOptions(
+        'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
+        'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
+        'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
+#        'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
+        'reseller|r'  => \$OPTS{'reseller'},
+        'help|?'      => sub { HelpMessage() },
+        'version'     => sub { VersionMessage(module_versions()) },
+    );
+
+    HelpMessage() if (not defined ${OPTS}{'user'});
+
+    return $result;
+}
+
 sub check_options {
     Getopt::Long::Configure(qw(gnu_getopt auto_version auto_help));
     my $time_changed;
     my $tag_flag;
 
+    return run_ecpp() if (basename($0) =~ m/^ec|ecpp$/);
+
     my $result = GetOptions(
         'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
         'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
         'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
+#        'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
 #        'time|t=s'    => \$OPTS{'timespec'},
         'override|o'  => \$OPTS{'time_override'},
         'read=i'      => \$OPTS{'read_lines'},
@@ -3203,6 +3244,7 @@ sub check_options {
         'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
         'version'     => sub { VersionMessage(module_versions()) },
     );
+
     # XXX: reports that don't work with cache currently
     if ($OPTS{'load'} eq 'cache' && $OPTS{'report'} eq 'forwarders') {
         $OPTS{'load'} = 'cron';
@@ -3673,6 +3715,12 @@ sub main {
         exit;
     }
 
+    if ($OPTS{'report'} eq 'acctls') {
+        
+        SpamReport::Output::email_search_results($OPTS{'email'});
+        exit;
+    }
+
     if ($OPTS{'report'} eq 'script') {
         SpamReport::Output::print_script_report();
         exit;
@@ -3759,7 +3807,7 @@ spamreport - Quickly report suspicious mail behavior on a server
 
 spamreport [--current] [--dbs] [-sehmn] [other long options...]
 
-Options:
+options:
 
     -s <time>   | --start=<time>
     -e <time>   | --end=<time>
