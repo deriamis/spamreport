@@ -820,7 +820,7 @@ sub cache_ls {
     push @details, SpamReport::Data::details($_)
         for <$SpamReport::Data::cronpath*>,
             <$SpamReport::Data::logpath*>;
-    my @legend = qw(NAME SIZE EMAILS OUTGOING BOUNCES START HOURS);
+    my @legend = qw(NAME SIZE EMAILS OUTGOING START HOURS);
     my @widths = map { length($_) } @legend;
     for (@details) {
         $_->{'name'} =~ s/spamreport(cron)?\.dat//;
@@ -829,21 +829,23 @@ sub cache_ls {
         width sprintf("%dM", $_->{'size'}/1024/1024) => $widths[0];
         width $_->{'emails'} => $widths[1];
         width $_->{'outgoing'} => $widths[2];
-        width $_->{'bounces'} => $widths[3];
-        width ago($_->{'OPTS'}{'start_time'}, 0)." ago" => $widths[4];
+        #width $_->{'bounces'} => $widths[3];
+        width ago($_->{'OPTS'}{'start_time'}, 1) => $widths[4];
         width $_->{'OPTS'}{'search_hours'} => $widths[5];
     }
-    printf "%$widths[6]s %$widths[0]sM %$widths[1]s %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s\n",
+    printf "%$widths[6]s %$widths[0]s %$widths[1]s %$widths[2]s %$widths[4]s %$widths[5]s\n",
         @legend;
     for (sort { $a->{'OPTS'}{'start_time'} <=> $b->{'OPTS'}{'start_time'} } @details) {
-        my $line = sprintf "%$widths[6]s %$widths[0]d %$widths[1]d %$widths[2]d %$widths[3]d %$widths[4]s %$widths[5]d\n",
+        my $line = sprintf "%$widths[6]s %$widths[0]dM %$widths[1]d %$widths[2]d %$widths[4]s %$widths[5]d :: %s -> %s\n",
             $_->{'name'} || 'cache',
             $_->{'size'}/1024/1024,
             $_->{'emails'},
             $_->{'outgoing'},
-            $_->{'bounces'},
-            $_->{'OPTS'}{'start_time'} ? ago($_->{'OPTS'}{'start_time'}, 0)." ago" : '',
-            $_->{'OPTS'}{'search_hours'};
+            #$_->{'bounces'},
+            $_->{'OPTS'}{'start_time'} ? ago($_->{'OPTS'}{'start_time'}, 1) : '',
+            $_->{'OPTS'}{'search_hours'},
+            $_->{'OPTS'}{'start_time'} ? scalar(localtime($_->{'OPTS'}{'start_time'})) : '(unknown)',
+            $_->{'OPTS'}{'end_time'} ? scalar(localtime($_->{'OPTS'}{'end_time'})) : '...';
         $line =~ s/(\(cron\))/$GREEN$1$NULL/g;
         print $line
     }
@@ -3854,16 +3856,18 @@ Indicator key:
 
     For example:
 
-      # spamreport --start '14 Feb' --end '17 Feb' --update --tag '14-17feb2016'
+      # spamreport --start '14 Feb' --end '17 Feb' --update --tag bad
 
     This will read files twice, first to create the daily cache and then to
     create the hourly cache.  Subsequent usage:
 
-      # spamreport --latest --tag '14-17feb2016'
-      # spamreport --latest --tag '14-17feb2016' -u badguy
-      # spamreport --latest --tag '14-17feb2016' -u root
-      # spamreport --latest --tag '14-17feb2016' --without "good1 good2"
-      # spamreport   # a normal run, not using the 14-17feb2016 cache
+      # spamreport --load .bad
+      # spamreport --load .bad -u badguy
+      # spamreport --load .bad -u root
+      # spamreport --load .bad --without "good1 good2"
+      # spamreport   # a normal run, not using this cache
+
+      # spamreport --ls   # see available cache
 
 =head1 EXPLORING ON YOUR OWN
 
