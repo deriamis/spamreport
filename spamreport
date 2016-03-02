@@ -833,7 +833,7 @@ sub note_forwarder_abuse {
 
 sub print_script_report {
     my $latest = SpamReport::Tracking::Scripts::latest();
-    my @widths = (length("#"), length("IP"), length("/IP"), length("GEO"), length("PATH"), length("NAME"));
+    my @widths = map { length $_ } qw(# IP /16 GEO PATH NAME);
     my $time = time();
     my $total = 0; for (values %$latest) { $total += $_->{'count'} }
     for (keys %$latest) {
@@ -848,7 +848,7 @@ sub print_script_report {
     unless ($data->{'OPTS'}{'full'}) { @scripts = grep { $latest->{$_}{'count'}/$total > 0.01 } @scripts }
     $omitted -= @scripts;
     printf "%$widths[0]s %$widths[1]s %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s\n", 
-        ("#"x$widths[0]), "IP", "/16", "GEO", "PATH", "NAME";
+        ("#"x$widths[0]), qw(IP /16 GEO PATH NAME);
     for (@scripts) {
         printf "%$widths[0]d %$widths[1]d %$widths[2]d %$widths[3]d %$widths[4]d %$widths[5]d %32s $GREEN%s$NULL %s %s\n",
             $latest->{$_}{'count'}, $latest->{$_}{'ips'}, $latest->{$_}{'ip16'},
@@ -860,6 +860,58 @@ sub print_script_report {
     }
     if ($omitted) {
         print "\n$omitted scripts were hidden"
+            . (defined $ENV{RUSER} ? "; re-run with --full to see them.\n" : ".\n")
+    }
+}
+
+sub analyze_helos {
+    for (values %{$data->{'mail_ids'}}) {
+        next unless exists $_->{'helo'} && exists $_->{'who'} && $_->{'who'} !~ /\@/;
+        next if defined($data->{'OPTS'}{'user'}) && $_->{'who'} ne $data->{'OPTS'}{'user'};
+        $data->{'total_helos'}++;
+        $data->{'helos'}{$_->{'who'}}{'count'}++;
+        $data->{'helos'}{$_->{'who'}}{'helo'}{$_->{'helo'}}++;
+        $data->{'helos'}{$_->{'who'}}{'IP'}{$1}++ if $_->{'helo'} =~ / \[((\d+\.\d+)\.\d+\.\d+)\]:\d+/;
+        $data->{'helos'}{$_->{'who'}}{'/16'}{$2}++ if defined $2;
+        $data->{'helos'}{$_->{'who'}}{'GEO'}{SpamReport::GeoIP::lookup($1)}++ if defined $1;
+        $data->{'helos'}{$_->{'who'}}{'from'}{$_->{'sender'}}++ if defined $_->{'sender'};
+    }
+}
+
+sub print_helo_report {
+    my @widths = map { length $_ } qw(# % IP /16 GEO FROM USER);
+    unless ($data->{'total_helos'}) { print "Nothing to report.\n"; return }
+    for (keys %{$data->{'helos'}}) {
+        width $data->{'helos'}{$_}{'count'} => $widths[0];
+        width sprintf("%.1f", $data->{'helos'}{$_}{'count'} / $data->{'total_helos'} * 100) => $widths[1];
+        width scalar(keys(%{$data->{'helos'}{$_}{'IP'}})) => $widths[2];
+        width scalar(keys(%{$data->{'helos'}{$_}{'/16'}})) => $widths[3];
+        width scalar(keys(%{$data->{'helos'}{$_}{'GEO'}})) => $widths[4];
+        width scalar(keys(%{$data->{'helos'}{$_}{'from'}})) => $widths[5];
+        width $_ => $widths[6];
+    }
+    printf "%$widths[0]s %$widths[1]s %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s\n",
+        ("#"x$widths[0]), ("%"x$widths[1]), qw(IP /16 GEO FROM);
+    my @helos = sort { $data->{'helos'}{$b}{'count'} <=> $data->{'helos'}{$a}{'count'} }
+                keys %{$data->{'helos'}};
+    my $omitted = @helos;
+    unless ($data->{'OPTS'}{'full'}) {
+        @helos = grep { $data->{'helos'}{$_}{'count'} / $data->{'total_helos'} > 0.01 } @helos;
+    }
+    $omitted = @helos;
+    for (@helos) {
+        printf "%$widths[0]s %$widths[1].1f %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s %$widths[6]s %s\n",
+            $data->{'helos'}{$_}{'count'},
+            $data->{'helos'}{$_}{'count'} / $data->{'total_helos'} * 100,
+            scalar(keys(%{$data->{'helos'}{$_}{'IP'}})),
+            scalar(keys(%{$data->{'helos'}{$_}{'/16'}})),
+            scalar(keys(%{$data->{'helos'}{$_}{'GEO'}})),
+            scalar(keys(%{$data->{'helos'}{$_}{'from'}})),
+            $_,
+            top_country($data->{'helos'}{$_}{'GEO'}, 'direct')
+    }
+    if ($omitted) {
+        print "\n$omitted users were hidden"
             . (defined $ENV{RUSER} ? "; re-run with --full to see them.\n" : ".\n")
     }
 }
@@ -1193,7 +1245,7 @@ sub print_login_results {
     my %h; $h{$_} = $data->{'logins'}{$_} for grep { $data->{'logins'}{$_}{'suspect'} } keys %{$data->{'logins'}};
     for (keys %h) {
         my ($lo, $pr) = map { length($_) } ($h{$_}{'total_logins'}, scalar(keys %{$h{$_}{'logins_from'}}));
-        my $wh = /\@(.*)/ ? length($h{$_}{'who'} = $data->{'domain2user'}{$1}) : 0;
+        my $wh = /[\@+]([^\@+]+)/ ? length($h{$_}{'who'} = $data->{'domain2user'}{$1}) : 0;
         setmax $lo => $width[0];
         setmax $pr => $width[1];
         setmax $wh => $width[2];
@@ -2262,6 +2314,8 @@ sub find_offserver {
 sub offserver_forwarders {
     for my $alias (keys %{$data->{'alias2dest'}}) {
         $alias_domain = '(UNKNOWN)';  $alias_domain = $1 if $alias =~ /[\@+]([^\@+]+)$/;
+        next if defined($data->{'OPTS'}{'user'}) &&
+            $data->{'domain2user'}{$alias_domain} ne $data->{'OPTS'}{'user'};
         $safety = 0;
         for (find_offserver(@{$data->{'alias2dest'}{$alias}})) {
             $data->{'offserver_forwarders'}{$alias}{$_}++;
@@ -2686,6 +2740,7 @@ sub parse_exim_mainlog {
                 # actually just go ahead and drop all mail that's only to local addresses
                 delete $data->{'mail_ids'}{$mailid};
             } else {
+                $data->{'mail_ids'}{$mailid}{'helo'} = $1 if $line =~ / H=(.*?)(?= [A-Z]=)/;
                 $data->{'total_outgoing'}++;
                 $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
                 $data->{'mailbox_responsibility'}{lc($from)}++;
@@ -2911,6 +2966,11 @@ sub find_dovecot_logins {
 # indicate on >10
 sub analyze_logins {
     for my $login (keys %{$data->{'logins'}}) {
+        if (defined($data->{'OPTS'}{'user'})) {
+            next if $login =~ /[\@+]([^\@+]+)/
+                && $data->{'OPTS'}{'user'} ne $data->{'domain2user'}{$1};
+            next if $login !~ /[\@+]/;
+        }
         my %prefix = map { /^(\d+\.\d+\.)/ or die $_; ($1, 1) } keys %{$data->{'logins'}{$login}{'logins_from'}};
         next unless scalar(keys %prefix) > 2;
         $data->{'logins'}{$login}{'suspect'} = 1;
@@ -2981,9 +3041,10 @@ my %OPTS = (
     'hourly_report' => undef,
     'full'          => undef,
     'dump'          => undef,
+    'user'          => undef,
 
     'report'        => 'summary',
-    # other values: user, script, md5, logins, forwarders
+    # other values: user, script, md5, logins, forwarders, helos
 
     # summary categories
     'with_queue'    => 1,
@@ -3036,13 +3097,14 @@ sub check_options {
 
         'without|w=s' => \$OPTS{'without'},
         'full|f'      => \$OPTS{'full'},
-        'user|u=s'    => sub { $OPTS{'report'} = 'user'; $OPTS{'load'} = 'cache'; $OPTS{'user'} = $_[1]; $OPTS{'full'} = 1 },
+        'user|u=s'    => sub { if ($OPTS{'report'} eq 'summary') { $OPTS{'report'} = 'user'; $OPTS{'load'} = 'cache' } $OPTS{'user'} = $_[1]; $OPTS{'full'} = 1 },
         'hourly'      => \$OPTS{'hourly_report'},
         'reseller|r'  => \$OPTS{'reseller'},
 
         'scripts'     => sub { $OPTS{'report'} = 'script'; $OPTS{'load'} = undef },
         'md5=s'       => sub { $OPTS{'report'} = 'md5'; $OPTS{'scriptmd5report'} = $_[1]; $OPTS{'load'} = undef },
         'logins'      => sub { $OPTS{'report'} = 'logins' },
+        'helos'       => sub { $OPTS{'report'} = 'helos' },
         'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
 
         'load=s'      => sub { $OPTS{'load'} = 'cache'; $SpamReport::Data::logpath = $_[1] },
@@ -3059,6 +3121,11 @@ sub check_options {
         'version'     => sub { VersionMessage(module_versions()) },
     );
 
+    if ($OPTS{'load'} eq 'cache' && $OPTS{'report'} eq 'forwarders') {
+        # --update runs don't save maillog
+        $OPTS{'load'} = 'cron'
+    }
+    
     $OPTS{'want_queue'} = 1 if $OPTS{'op'} ne 'cron' && $OPTS{'with_queue'};
     $OPTS{'want_maillog'} = 1 if $OPTS{'op'} ne 'report' or $OPTS{'report'} eq 'logins';
     $OPTS{'want_eximlog'} = 1 unless $OPTS{'report'} eq 'md5'
@@ -3477,7 +3544,9 @@ sub main {
         parse_exim_queue() if $OPTS{'want_queue'};
         parse_exim_logs() if $OPTS{'want_eximlog'};
         parse_dovecot_logs() if $OPTS{'want_maillog'};
-        SpamReport::Data::save() unless $OPTS{'load'} eq 'cache';
+        SpamReport::Data::save() unless $OPTS{'load'} eq 'cache'
+            or defined($OPTS{'user'})
+            or defined($OPTS{'without'});
         SpamReport::Tracking::Scripts::save();
     }
     SpamReport::Tracking::Suspensions::load();
@@ -3508,6 +3577,12 @@ sub main {
     if ($OPTS{'report'} eq 'logins') {
         SpamReport::Maillog::analyze_logins();
         SpamReport::Output::print_login_results(); 
+        exit;
+    }
+
+    if ($OPTS{'report'} eq 'helos') {
+        SpamReport::Output::analyze_helos();
+        SpamReport::Output::print_helo_report();
         exit;
     }
 
@@ -3586,6 +3661,7 @@ Options:
                 | --forwarders          : print forwarder reporter
                 | --scripts             : print scripts report
                 | --md5 <md5sum>        : print details about a script md5sum
+                | --helos               : print HELO report
 
     -w          | --without=<u1 u2 ..>  : remove users' email before reporting
     -f          | --full                : don't remove ticketed users' email
@@ -3613,10 +3689,11 @@ Usage:
     spamreport -u <reseller> -r
     spamreport -u root
 
-    spamreport --logins [--full]
-    spamreport --forwarders [--full]
+    spamreport --logins [-u <user>]
+    spamreport --forwarders [--full] [-u <user>]
     spamreport --scripts [--full]
     spamreport --md5 <md5sum>
+    spamreport --helos [--full] [-u <user>]
 
     spamreport --without "baduser boringuser checkeduser" [...]
 
