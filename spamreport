@@ -1306,7 +1306,7 @@ sub print_script_results {
 
 sub print_login_results {
     print "\nSuspect logins\n";
-    my @width = (0, 0, 0);
+    my @width = (0, 0, 0, 0);
     my %h; $h{$_} = $data->{'logins'}{$_} for grep { $data->{'logins'}{$_}{'suspect'} } keys %{$data->{'logins'}};
     for (keys %h) {
         my ($lo, $pr) = map { length($_) } ($h{$_}{'total_logins'}, scalar(keys %{$h{$_}{'logins_from'}}));
@@ -1314,16 +1314,22 @@ sub print_login_results {
         setmax $lo => $width[0];
         setmax $pr => $width[1];
         setmax $wh => $width[2];
+        setmax $_ => $width[3];
     }
+    $width[3] = 30 if $width[3] > 30;  # XXX
     for my $login (reverse sort { $h{$a}{'total_logins'} <=> $h{$b}{'total_logins'} } keys %h) {
+        (my $short = $login) =~ s/^(.{27}).*/$1\e\e\e/; # XXX
         my @ips = sort { $h{$login}{'logins_from'}{$b} <=> $h{$login}{'logins_from'}{$a} } keys %{$h{$login}{'logins_from'}};
         my @counts = map { $h{$login}{'logins_from'}{$_} } @ips;
-        printf "%$width[0]d %$width[2]s %$width[1]d $login   %s(%d) %s(%d) %s(%d) :: %s\n",
+        my $line = sprintf "%$width[0]d %$width[2]s %$width[1]d %$width[3]s %s(%d) %s(%d) %s(%d) :: %s\n",
             $h{$login}{'total_logins'}, $h{$login}{'who'}, scalar(keys %{$h{$login}{'logins_from'}}),
+            $short,
             "$MAGENTA$ips[0]$NULL", $counts[0],
             "$YELLOW$ips[1]$NULL", $counts[1],
             "$GREEN$ips[2]$NULL", $counts[2], # join(" ", map { $ips[$_].':'.$counts[$_] } 3..$#ips)
-            top_country($h{$login}{'country'})
+            top_country($h{$login}{'country'});
+        $line =~ s/\e\e\e/$RED...$NULL/g;
+        print $line
     }
 }
 
