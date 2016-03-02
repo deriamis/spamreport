@@ -166,6 +166,18 @@ sub details {
     return \%detail
 }
 
+# --ls displays files like '.3' '.test' '.1(cron)'.  load these (without (cron)).
+sub resolve {
+    my ($name) = @_;
+    $logpath .= $name;
+    die "Unresolved cache name: $name" unless -f $logpath;
+}
+sub resolvecron {
+    my ($name) = @_;
+    $cronpath .= $name;
+    die "Unresolved croncache name: $name" unless -f $cronpath;
+}
+
 1;
 } # end module SpamReport::Data
 BEGIN {
@@ -820,7 +832,7 @@ sub cache_ls {
         width $_->{'outgoing'} => $widths[2];
         width $_->{'bounces'} => $widths[3];
         width ago($_->{'OPTS'}{'start_time'}, 0)." ago" => $widths[4];
-        width $_->{'search_hours'} => $widths[5];
+        width $_->{'OPTS'}{'search_hours'} => $widths[5];
     }
     printf "%$widths[6]s %$widths[0]sM %$widths[1]s %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s\n",
         @legend;
@@ -832,7 +844,7 @@ sub cache_ls {
             $_->{'outgoing'},
             $_->{'bounces'},
             $_->{'OPTS'}{'start_time'} ? ago($_->{'OPTS'}{'start_time'}, 0)." ago" : '',
-            $_->{'search_hours'};
+            $_->{'OPTS'}{'search_hours'};
         $line =~ s/(\(cron\))/$GREEN$1$NULL/g;
         print $line
     }
@@ -1660,7 +1672,7 @@ Emails found in queue:
 ----------------------
 User: @{[commify($u->{'queued'})]}, Total: @{[commify($data->{'total_queue'})]}
 
-This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.@{[scalar(keys(%{$data->{'crossauth'}{$user}})) && "\n${MAGENTA}Some of this user's email may be getting authorized by an another user's credentials.$NULL"]}
+This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.@{[scalar(keys(%{$data->{'crossauth'}{$user}})) ? "\n${MAGENTA}Some of this user's email may be getting authorized by an another user's credentials.$NULL" : '']}
 
 
 REPORT
@@ -3124,6 +3136,7 @@ my %OPTS = (
     # data modes
     'load'          => 'cron',
     # other values: 'cache', undef
+    'save'          => 1,
 );
 
 END {
@@ -3165,8 +3178,9 @@ sub check_options {
         'helos'       => sub { $OPTS{'report'} = 'helos' },
         'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
 
-        'load=s'      => sub { $OPTS{'load'} = 'cache'; $SpamReport::Data::logpath = $_[1] },
-        'loadcron=s'  => sub { $OPTS{'load'} = 'cron'; $SpamReport::Data::cronpath = $_[1] },
+        'load=s'      => sub { $OPTS{'load'} = 'cache'; SpamReport::Data::resolve($_[1]); $OPTS{'save'} = 0 },
+        'loadcron=s'  => sub { $OPTS{'load'} = 'cron'; SpamReport::Data::resolvecron($_[1]); $OPTS{'save'} = 0 },
+        'save'        => \$OPTS{'save'},  # undocumented
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
 
@@ -3593,7 +3607,7 @@ sub main {
             parse_dovecot_logs() if $OPTS{'want_maillog'};
         }
         if ($OPTS{'op'} eq 'update') {
-            SpamReport::Data::savecron() unless $loadedcron;
+            SpamReport::Data::savecron() if !$loadedcron && $OPTS{'save'};
             $OPTS{'datelimit'} = 'only today' if $loadedcron;
             parse_exim_dbs() if $OPTS{'want_eximdb'};
             parse_exim_logs() if $OPTS{'want_eximlog'};
@@ -3602,10 +3616,10 @@ sub main {
             DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
         }
         SpamReport::Cpanel::young_users();
-        SpamReport::Tracking::Scripts::save();
+        SpamReport::Tracking::Scripts::save() if $OPTS{'save'};
         SpamReport::Data::exitsavecron() if $OPTS{'op'} eq 'cron';
         SpamReport::Cpanel::offserver_forwarders();
-        SpamReport::Data::save();
+        SpamReport::Data::save() if $OPTS{'save'};
         exit
     }
 
@@ -3615,7 +3629,7 @@ sub main {
 
     if ($OPTS{'load'} eq 'no') {
         # no need to load data
-        SpamReport::Tracking::Scripts::save();
+        SpamReport::Tracking::Scripts::save() if $OPTS{'save'};
     } elsif ($OPTS{'load'} eq 'cache') {
         SpamReport::Data::load();
         userfy_args();
@@ -3630,10 +3644,10 @@ sub main {
         parse_exim_queue() if $OPTS{'want_queue'};
         parse_exim_logs() if $OPTS{'want_eximlog'};
         parse_dovecot_logs() if $OPTS{'want_maillog'};
-        SpamReport::Data::save() unless $OPTS{'load'} eq 'cache'
+        SpamReport::Data::save() if $OPTS{'save'} && !($OPTS{'load'} eq 'cache'
             or defined($OPTS{'user'})
-            or defined($OPTS{'without'});
-        SpamReport::Tracking::Scripts::save();
+            or defined($OPTS{'without'}));
+        SpamReport::Tracking::Scripts::save() if $OPTS{'save'};
     }
     SpamReport::Tracking::Suspensions::load();
     SpamReport::GeoIP::init();
