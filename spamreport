@@ -30,7 +30,7 @@ BEGIN {
 package SpamReport::Data;
 use common::sense;
 use Exporter;
-use Storable qw(lock_store lock_retrieve);
+use Storable qw(lock_store lock_retrieve retrieve);
 use POSIX qw(strftime);
 
 use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
@@ -82,6 +82,7 @@ my %cronkeys = map { ($_, 1) }
         responsibility domain_responsibility bounce_responsibility owner_responsibility
         bounce_owner_responsibility mailbox_responsibility forwarder_responsibility
         young_users young_mailboxes outip outscript hourly_volume total_outgoing total_bounce
+        OPTS
     );
 sub savecron {
     my %newdata;
@@ -144,6 +145,25 @@ sub disable {
     = *{"SpamReport::Data::retrievecron"}
     = *{"SpamReport::Data::savecron"} = sub { };
     *{"SpamReport::Data::exitsavecron"} = sub { exit };
+}
+
+sub details {
+    my ($file) = @_;
+    $file =~ m,/([^/]+)$,;
+    my %detail = (name => (defined($1) ? $1 : $file));
+    my $cache;  eval { $cache = retrieve($file) };
+    if ($@) {
+        $detail{'status'} = "broken $@";
+        return \%detail
+    }
+    $detail{'type'} = (($file =~ /spamreportcron\.dat/) ? 'cron' : 'cache');
+    $detail{'status'} = 'ok';
+    $detail{'size'} = -s $file;
+    $detail{'emails'} = scalar(keys(%{$cache->{'mail_ids'}}));
+    $detail{'outgoing'} = $cache->{'total_outgoing'};
+    $detail{'bounces'} = $cache->{'total_bounce'};
+    $detail{'OPTS'} = $cache->{'OPTS'};
+    return \%detail
 }
 
 1;
@@ -782,6 +802,40 @@ sub print_results {
 
     print "\n";
     1;
+}
+
+sub cache_ls {
+    my @details;
+    push @details, SpamReport::Data::details($_)
+        for <$SpamReport::Data::cronpath*>,
+            <$SpamReport::Data::logpath*>;
+    my @legend = qw(NAME SIZE EMAILS OUTGOING BOUNCES START HOURS);
+    my @widths = map { length($_) } @legend;
+    for (@details) {
+        $_->{'name'} =~ s/spamreport(cron)?\.dat//;
+        $_->{'name'} .= "(cron)" if defined $1;
+        width $_->{'name'} => $widths[6];
+        width sprintf("%dM", $_->{'size'}/1024/1024) => $widths[0];
+        width $_->{'emails'} => $widths[1];
+        width $_->{'outgoing'} => $widths[2];
+        width $_->{'bounces'} => $widths[3];
+        width ago($_->{'OPTS'}{'start_time'}, 0)." ago" => $widths[4];
+        width $_->{'search_hours'} => $widths[5];
+    }
+    printf "%$widths[6]s %$widths[0]sM %$widths[1]s %$widths[2]s %$widths[3]s %$widths[4]s %$widths[5]s\n",
+        @legend;
+    for (sort { $a->{'OPTS'}{'start_time'} <=> $b->{'OPTS'}{'start_time'} } @details) {
+        my $line = sprintf "%$widths[6]s %$widths[0]d %$widths[1]d %$widths[2]d %$widths[3]d %$widths[4]s %$widths[5]d\n",
+            $_->{'name'} || 'cache',
+            $_->{'size'}/1024/1024,
+            $_->{'emails'},
+            $_->{'outgoing'},
+            $_->{'bounces'},
+            $_->{'OPTS'}{'start_time'} ? ago($_->{'OPTS'}{'start_time'}, 0)." ago" : '',
+            $_->{'search_hours'};
+        $line =~ s/(\(cron\))/$GREEN$1$NULL/g;
+        print $line
+    }
 }
 
 sub print_forwarder_abuse {
@@ -3047,7 +3101,7 @@ my %OPTS = (
     'r_cutoff'      => 1.0,
 
     'report'        => 'summary',
-    # other values: user, script, md5, logins, forwarders, helos
+    # other values: user, script, md5, logins, forwarders, helos, cachelist
 
     # summary categories
     'with_queue'    => 1,
@@ -3105,8 +3159,8 @@ sub check_options {
         'hourly'      => \$OPTS{'hourly_report'},
         'reseller|r'  => \$OPTS{'reseller'},
 
-        'scripts'     => sub { $OPTS{'report'} = 'script'; $OPTS{'load'} = undef },
-        'md5=s'       => sub { $OPTS{'report'} = 'md5'; $OPTS{'scriptmd5report'} = $_[1]; $OPTS{'load'} = undef },
+        'scripts'     => sub { $OPTS{'report'} = 'script'; $OPTS{'load'} = 'no' },
+        'md5=s'       => sub { $OPTS{'report'} = 'md5'; $OPTS{'scriptmd5report'} = $_[1]; $OPTS{'load'} = 'no' },
         'logins'      => sub { $OPTS{'report'} = 'logins' },
         'helos'       => sub { $OPTS{'report'} = 'helos' },
         'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
@@ -3119,6 +3173,7 @@ sub check_options {
         'tag=s'       => sub { $SpamReport::Data::logpath .= ".$_[1]";
                                $SpamReport::Data::cronpath .= ".$_[1]";
                                $tag_flag = 1; },
+        'ls'          => sub { $OPTS{'report'} = 'cachels'; $OPTS{'load'} = 'no' },
         'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
         'update'      => sub { $OPTS{'op'} = 'update' },
         'latest'      => sub { $OPTS{'load'} = 'cache' },
@@ -3516,7 +3571,7 @@ sub main {
 
     if ($OPTS{'load'} eq 'cron') {
         SpamReport::Data::loadcron();
-        $OPTS{$_} = $data->{'OPTS'} for @SAVED_OPTS;
+        $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
         if (keys %$data) {
             $loadedcron = 1;
         } else {
@@ -3558,13 +3613,13 @@ sub main {
 
     SpamReport::Output::head_info($data->{'OPTS'});
 
-    if ($OPTS{'report'} eq 'script' or $OPTS{'report'} eq 'md5') {
+    if ($OPTS{'load'} eq 'no') {
         # no need to load data
         SpamReport::Tracking::Scripts::save();
     } elsif ($OPTS{'load'} eq 'cache') {
         SpamReport::Data::load();
         userfy_args();
-        $OPTS{$_} = $data->{'OPTS'} for @SAVED_OPTS;
+        $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
         $data->{'OPTS'} = \%OPTS;
     } else {
         setup_cpanel();
@@ -3620,6 +3675,11 @@ sub main {
     if ($OPTS{'report'} eq 'forwarders') {
         SpamReport::Cpanel::offserver_forwarders();
         SpamReport::Output::print_forwarder_abuse();
+        exit;
+    }
+
+    if ($OPTS{'report'} eq 'cachels') {
+        SpamReport::Output::cache_ls();
         exit;
     }
 
@@ -3703,6 +3763,8 @@ Options:
                 | --load=path/to/file   : load data from file
                 | --loadcron=/to/file   : load crondata from file
                 | --keep=<number>       : preserve # of rotated logs
+                | --tag=<tag>           : use tagged instead of default cache
+                | --ls                  : show available cache files
 
                 | --dump=path/to/file   : save (human-readable) YAML files to
                                           $path.cron  : --cron seeded data
