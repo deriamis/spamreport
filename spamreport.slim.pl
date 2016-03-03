@@ -4,13 +4,14 @@ BEGIN {
 package SpamReport::GeoIP;
 use Geo::IPfree;
 use IP::Country::Fast;
+use FindBin qw( $Bin );
 use vars qw($VERSION);
 $VERSION = '2016022601';
 
 my ($geo, $ipc);
 
 sub init {
-    $geo = Geo::IPfree->new;
+    $geo = Geo::IPfree->new("$Bin/ipscountry.dat");
     $geo->Faster;
     $ipc = IP::Country::Fast->new;
 }
@@ -326,7 +327,7 @@ my $cutoff = $midnight - (60 * 24 * 3600);  # 60 days ago
 sub load {
     load_abusetool();
     load_lockdown();
-    opendir my $d, $abusepath or do { warn "Unable to open $abusepath : $!"; return };
+    opendir my $d, $abusepath or return;
     while ($_ = readdir($d)) {
         open my $f, '<', $abusepath.$_ or next;
         my $ctime = (stat($f))[10];
@@ -3095,17 +3096,14 @@ $INC{'SpamReport/Maillog.pm'} = '/dev/null';
 { # begin main package
 package SpamReport;
 
-use local::lib qw(./);
-
+use local::lib (./lib);
 use SpamReport::Data;
 use SpamReport::ANSIColor;
 use SpamReport::GeoIP;
 use SpamReport::Tracking::Scripts;
 use SpamReport::Tracking::Suspensions;
 use SpamReport::Tracking::Performance;
-use Regexp::Common::Exim;
-use Regexp::Common::Maillog;
-use Regexp::Common::SpamReport;
+use Regexp::Common qw(SpamReport Exim Maillog);
 use SpamReport::Annotate;
 use SpamReport::Output;
 use File::Nonblock;
@@ -3137,14 +3135,14 @@ use Sys::Hostname::Long qw(hostname_long);
 use Regexp::Common qw/Exim Maillog SpamReport/;
 use YAML::Syck qw(DumpFile);  # only for --dump
 
-use base qw(
-    SpamReport::Output
-    SpamReport::Cpanel
-    SpamReport::Exim
-    SpamReport::Maillog
-    SpamReport::Exim::DB
-    File::Nonblock
-);
+#use base qw(
+#    SpamReport::Output
+#    SpamReport::Cpanel
+#    SpamReport::Exim
+#    SpamReport::Maillog
+#    SpamReport::Exim::DB
+#    File::Nonblock
+#);
 
 # Bypass using timelocal to calculate the timezone offset
 my @time = CORE::localtime(time);
@@ -3187,10 +3185,6 @@ my %OPTS = (
     # other values: 'cache', undef
     'save'          => 1,
 );
-
-END {
-    DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
-}
 
 my @SAVED_OPTS = qw(search_hours start_time end_time timespec);
 
@@ -3818,6 +3812,10 @@ sub module_versions {
 }
 
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
+
+END {
+    DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
+}
 
 1;
 } # end main package
