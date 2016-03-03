@@ -1,6 +1,6 @@
-/root/spam/bin/cpanm
-/root/spam/lib/perl5/App/cpanminus.pm
-/root/spam/lib/perl5/App/cpanminus/fatscript.pm
+/root/spamreport/bin/cpanm
+/root/spamreport/lib/perl5/App/cpanminus.pm
+/root/spamreport/lib/perl5/App/cpanminus/fatscript.pm
 /usr/local/bin/cpanm
 /usr/local/lib/perl5/site_perl/5.8.8/App/cpanminus.pm
 /usr/local/lib/perl5/site_perl/5.8.8/App/cpanminus/fatscript.pm

@@ -1,10 +1,10 @@
-=head2 Wed Mar  2 20:38:03 2016: C<Module> L<ExtUtils::MakeMaker|ExtUtils::MakeMaker>
+=head2 Wed Mar  2 22:51:38 2016: C<Module> L<ExtUtils::MakeMaker|ExtUtils::MakeMaker>
 
 =over 4
 
 =item *
 
-C<installed into: /root/spam/lib/perl5>
+C<installed into: /root/spamreport/lib/perl5>
 
 =item *
 
@@ -20,145 +20,13 @@ C<EXE_FILES: bin/instmodsh>
 
 =back
 
-=head2 Wed Mar  2 20:38:05 2016: C<Module> L<Geography::Countries|Geography::Countries>
+=head2 Wed Mar  2 22:51:39 2016: C<Module> L<App::cpanminus|App::cpanminus>
 
 =over 4
 
 =item *
 
-C<installed into: /root/spam/lib/perl5>
-
-=item *
-
-C<LINKTYPE: dynamic>
-
-=item *
-
-C<VERSION: 2009041301>
-
-=item *
-
-C<EXE_FILES: >
-
-=back
-
-=head2 Wed Mar  2 20:38:07 2016: C<Module> L<IP::Country|IP::Country>
-
-=over 4
-
-=item *
-
-C<installed into: /root/spam/lib/perl5>
-
-=item *
-
-C<LINKTYPE: dynamic>
-
-=item *
-
-C<VERSION: 2.28>
-
-=item *
-
-C<EXE_FILES: bin/ip2cc>
-
-=back
-
-=head2 Wed Mar  2 20:39:16 2016: C<Module> L<Memoize|Memoize>
-
-=over 4
-
-=item *
-
-C<installed into: /root/spam/lib/perl5>
-
-=item *
-
-C<LINKTYPE: dynamic>
-
-=item *
-
-C<VERSION: 1.03>
-
-=item *
-
-C<EXE_FILES: >
-
-=back
-
-=head2 Wed Mar  2 20:39:17 2016: C<Module> L<Geo::IPfree|Geo::IPfree>
-
-=over 4
-
-=item *
-
-C<installed into: /root/spam/lib/perl5>
-
-=item *
-
-C<LINKTYPE: dynamic>
-
-=item *
-
-C<VERSION: 1.151940>
-
-=item *
-
-C<EXE_FILES: >
-
-=back
-
-=head2 Wed Mar  2 20:39:40 2016: C<Module> L<Regexp::Common|Regexp::Common>
-
-=over 4
-
-=item *
-
-C<installed into: /root/spam/lib/perl5>
-
-=item *
-
-C<LINKTYPE: dynamic>
-
-=item *
-
-C<VERSION: 2016020301>
-
-=item *
-
-C<EXE_FILES: >
-
-=back
-
-=head2 Wed Mar  2 20:39:41 2016: C<Module> L<Sys::Hostname::Long|Sys::Hostname::Long>
-
-=over 4
-
-=item *
-
-C<installed into: /root/spam/lib/perl5>
-
-=item *
-
-C<LINKTYPE: dynamic>
-
-=item *
-
-C<VERSION: 1.5>
-
-=item *
-
-C<EXE_FILES: >
-
-=back
-
-=head2 Wed Mar  2 20:54:56 2016: C<Module> L<App::cpanminus|App::cpanminus>
-
-=over 4
-
-=item *
-
-C<installed into: /root/spam/lib/perl5>
+C<installed into: /root/spamreport/lib/perl5>
 
 =item *
 
@@ -174,13 +42,13 @@ C<EXE_FILES: bin/cpanm>
 
 =back
 
-=head2 Wed Mar  2 20:55:04 2016: C<Module> L<Test::Simple|Test::Simple>
+=head2 Wed Mar  2 22:51:46 2016: C<Module> L<Test::Simple|Test::Simple>
 
 =over 4
 
 =item *
 
-C<installed into: /root/spam/lib/perl5>
+C<installed into: /root/spamreport/lib/perl5>
 
 =item *
 
@@ -196,13 +64,13 @@ C<EXE_FILES: >
 
 =back
 
-=head2 Wed Mar  2 20:55:05 2016: C<Module> L<App::FatPacker|App::FatPacker>
+=head2 Wed Mar  2 22:51:47 2016: C<Module> L<App::FatPacker|App::FatPacker>
 
 =over 4
 
 =item *
 
-C<installed into: /root/spam/lib/perl5>
+C<installed into: /root/spamreport/lib/perl5>
 
 =item *
 
