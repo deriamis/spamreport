@@ -30,8 +30,10 @@ $INC{'SpamReport/GeoIP.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Data;
 use Exporter;
-use Storable qw(lock_store lock_retrieve retrieve);
+use Storable qw(fd_retrieve);
 use POSIX qw(strftime);
+use Fcntl qw(:flock);
+use File::Which qw ( which );
 use common::sense;
 
 use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
@@ -39,12 +41,50 @@ use vars qw($logpath $cronpath);
 $VERSION = '2016022601';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
+my $gzip = which('gzip');
+
+$logpath = "/opt/hgmods/logs/spamreport.dat";
+$cronpath = "/opt/hgmods/logs/spamreportcron.dat";
+
 $data = {};
 $MAX_RETAINED = 4;
 $loadcronfail = '';
 
-$logpath = "/opt/hgmods/logs/spamreport.dat";
-$cronpath = "/opt/hgmods/logs/spamreportcron.dat";
+sub retrieve {
+    my ($path, $lock) = @_;
+    if ($path =~ /\.gz$/) {
+        open my $fd, '-|', $gzip, '-dc', $path
+            or die "Couldn't fork $gzip for $path : $!";
+        if ($lock) { flock $fd, LOCK_SH or die "Couldn't lock $path : $!"; }
+        my $ref = fd_retrieve($fd)
+            or die "Unable to read $path : $!";
+        close $fd;
+        return $ref
+    }
+    elsif ($lock) {
+        return Storable::lock_retrieve($path)
+    }
+    else {
+        return Storable::retrieve($path)
+    }
+}
+sub lock_retrieve { retrieve(shift, 1) }
+
+sub lock_store {
+    my ($ref, $path) = @_;
+    if ($path =~ /\.gz$/) {
+        $path =~ m,^(.*)/[^/]+$, or die "Couldn't find directory component of $path";
+        my $tmp = File::Temp::tmpnam($1, "srgzipout");
+
+        open my $fd, '|-', "$gzip > $tmp"
+            or die "Couldn't fork $gzip for $path : $!";
+        store_fd $ref, $fd or die "Failed to store to $path : $!";
+        close $fd;
+        rename $tmp, $path or die "Unable to rename $tmp to $path : $!";
+    } else {
+        return Storable::lock_store($ref, $path)
+    }
+}
 
 sub loadcron {
     my ($path) = @_;
@@ -4062,4 +4102,5 @@ ab7029 ab7266 adeola72 bodynas cameranclick cjzgproducciones done donex dpianes 
 
     Reads log files in batches of lines, compressed or otherwise, with support
     for accurate progress indicators.
+
 
