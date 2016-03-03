@@ -2754,7 +2754,8 @@ sub parse_exim_mainlog {
             SpamReport::Tracking::Scripts::script($2, $1);
         }
         elsif (substr($line,37,5) eq '<= <>') {
-            $line =~ s/T=".*?(?<!\\)" //;
+            $line =~ s/T="(.*?)(?<!\\)" //;
+            my $subject = $1;  # only used on authorized 'bounces'
             next unless $line =~ /.*for (.*)$/;  # leading .* causes it to backtrack from the right
             my @to = split / /, $1;
             $line =~ / S=(\S+)/; for my $script ($1) {
@@ -2764,14 +2765,28 @@ sub parse_exim_mainlog {
                 }
             }
             $data->{'mail_ids'}{$mailid}{'recipients'} = \@to;
-            if (@to == 1 && $to[0] =~ /\@(\S+)/ and exists $data->{'domain2user'}{$1}) {
+            if ($line =~ / A=dovecot_\S+:([^\@+]+(?:[\@+](\S+))?)/) {
+                # authenticated bounces!
+                $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
+                my $user = $1;
+                if (defined $2) {
+                    $user = $data->{'domain2user'}{$2};
+                    $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2;
+                    $data->{'domain_responsibility'}{$2}++;
+                    $data->{'mailbox_responsibility'}{$1}++;
+                }
+                $data->{'bounce_responsibility'}{$user}++;
+                $data->{'mail_ids'}{$mailid}{'who'} = $user;
+                $data->{'mail_ids'}{$mailid}{'subject'} = $subject if defined $subject;
+            }
+            elsif (@to == 1 && $to[0] =~ /\@(\S+)/ and exists $data->{'domain2user'}{$1}) {
                 my $user = $data->{'domain2user'}{$1};
                 $data->{'domain_responsibility'}{$1}++;
                 $data->{'mailbox_responsibility'}{$to[0]}++;
                 $data->{'bounce_responsibility'}{$user}++;
                 $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
                         if exists $data->{'user2owner'}{$user}
-			&& $data->{'user2owner'}{$user} ne 'root';
+                               && $data->{'user2owner'}{$user} ne 'root';
                 $data->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
             }
@@ -2800,7 +2815,7 @@ sub parse_exim_mainlog {
                 $data->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
             }
             $data->{'mail_ids'}{$mailid}{'subject'} = $subject;
-            if ($line =~ / A=dovecot_\S+:(\S+(?:[\@+](\S+))?)/) {
+            if ($line =~ / A=dovecot_\S+:([^\@+]+(?:[\@+](\S+))?)/) {
                 $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
                 $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2 if defined $2;
             }
