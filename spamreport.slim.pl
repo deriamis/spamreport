@@ -3096,7 +3096,6 @@ $INC{'SpamReport/Maillog.pm'} = '/dev/null';
 { # begin main package
 package SpamReport;
 
-use local::lib (./lib);
 use SpamReport::Data;
 use SpamReport::ANSIColor;
 use SpamReport::GeoIP;
