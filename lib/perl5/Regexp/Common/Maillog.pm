@@ -18,4 +18,3 @@ pattern name => [ qw(mail login info) ],
       create => q/^user=<([^>]+)>.*?rip=([^,]+), lip=([^,]+),.*/;
 
 1;
-} # end module Regexp::Common::Maillog

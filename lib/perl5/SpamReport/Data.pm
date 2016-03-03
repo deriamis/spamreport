@@ -150,4 +150,3 @@ sub resolvecron {
 }
 
 1;
-} # end module SpamReport::Data

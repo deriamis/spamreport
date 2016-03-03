@@ -66,4 +66,3 @@ sub close {
 }
 
 1;
-} # end module SpamReport::Exim::DB

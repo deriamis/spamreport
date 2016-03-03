@@ -708,10 +708,6 @@ sub module_versions {
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
 
 1;
-} # end main package
-BEGIN {
-$INC{'SpamReport.pm'} = '/dev/null';
-}
 
 __END__
 

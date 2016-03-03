@@ -66,5 +66,3 @@ pattern name => [ qw(exim info script) ],
       create => q,^\S+ \S+ cwd=(/home\S+)(?!.*-FCronDaemon.*$),;
 
 1;
-
-} # end module Regexp::Common::Exim

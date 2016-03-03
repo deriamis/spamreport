@@ -13,7 +13,7 @@ use Socket qw(inet_aton inet_ntoa);
 use Sys::Hostname::Long qw(hostname_long);
 
 my $hostname = hostname_long();
-my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
+my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost') || pack("N", '127.0.0.1'));
 
 my @time = CORE::localtime(time);
 my $tz_offset = timegm(@time) - timelocal(@time);
@@ -75,4 +75,3 @@ sub analyze_logins {
 }
 
 1;
-} # end module SpamReport::Maillog

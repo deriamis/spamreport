@@ -27,4 +27,3 @@ pattern name => [ qw(apache timestamp) ],
     create => q/(\d{2})\/(\d{2})\/(\d{4}):(\d{2}):(\d{2}):(\d{2})\s(-?\d{4})/;
 
 1;
-} # end module Regexp::Common::SpamReport

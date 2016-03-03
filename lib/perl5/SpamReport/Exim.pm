@@ -424,4 +424,3 @@ sub analyze_num_recipients {
 }
 
 1;
-} # end module SpamReport::Exim

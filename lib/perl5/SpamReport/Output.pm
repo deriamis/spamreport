@@ -1002,4 +1002,3 @@ sub top {
 }
 
 1;
-} # end SpamReport::Output

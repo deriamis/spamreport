@@ -15,4 +15,3 @@ sub suppress {
 }
 
 1;
-} # end module SpamReport::ANSIColor
