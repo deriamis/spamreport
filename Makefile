@@ -31,10 +31,10 @@ lib:
 depend:: spamreport.slim.pl deps.pl
 	perl deps.pl $<
 	mv lib/perl5/SpamReport.pm lib/perl5/SpamReport.pl
-	perl ~/bin/cpanm -L ./ --exclude-vendor --no-man-pages --installdeps ./
+	cpanm -L ./ --exclude-vendor --no-man-pages --installdeps ./
 
 bin/fatpack:
-	perl ~/bin/cpanm -L ./ --exclude-vendor --no-man-pages App::FatPacker App::cpanminus
+	cpanm -L ./ --exclude-vendor --no-man-pages App::FatPacker App::cpanminus
 
 build/spamreport: spamreport.slim.pl lib/perl5/SpamReport.pl bin/fatpack
 	mkdir -p build
