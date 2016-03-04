@@ -169,7 +169,7 @@ sub load {
 
 sub save {
     rotate();
-    print "Saving cache $logpath";
+    print "Saving cache $logpath\n";
     #DumpFile($logpath, $data);
     lock_store $data, $logpath;
 }
@@ -3260,84 +3260,87 @@ my $main_ip = inet_ntoa(scalar gethostbyname($hostname || 'localhost'));
 my %factories;
 my %sections;
 
-sub run_ecpp {
-    Getopt::Long::Configure(qw(gnu_getopt auto_version auto_help));
-    my $result;
-    my $time_changed;
-
-    $OPTS{'report'} = 'user';
-    $OPTS{'load'} = 'cache';
-    $OPTS{'user'} = $ARGV[0];
-    $OPTS{'full'} = 1;
-    $result = GetOptions(
-        'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
-        'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
-        'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
-#        'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
-        'reseller|r'  => \$OPTS{'reseller'},
-        'help|?'      => sub { HelpMessage() },
-        'version'     => sub { VersionMessage(module_versions()) },
-    );
-
-    HelpMessage() if (not defined ${OPTS}{'user'});
-
-    return $result;
-}
-
 sub check_options {
     Getopt::Long::Configure(qw(gnu_getopt auto_version auto_help));
     my $time_changed;
     my $tag_flag;
+    my $result;
+    my $ecpp;
 
-    return run_ecpp() if (basename($0) =~ m/^ec|ecpp$/);
+    if (basename($0) =~ m/^ec|ecpp$/) {
+        $ecpp = 1;
+        $OPTS{'report'} = 'user';
+        $OPTS{'load'} = 'cache';
+        $OPTS{'full'} = 1;
+        $OPTS{'hourly_report'} = 1;
+        $result = GetOptions(
+            'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
+            'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
+            'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
+#            'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
+            'reseller|r'  => \$OPTS{'reseller'},
+            'help|?'      => sub { ec_usage() },
+            'version'     => sub { VersionMessage(module_versions()) },
+        );
+        ec_usage() unless @ARGV == 1;
+        $OPTS{'user'} = $ARGV[0];
+    } else {
+        $result = GetOptions(
+            'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
+            'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
+            'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
+#            'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
+#            'time|t=s'    => \$OPTS{'timespec'},
+            'override|o'  => \$OPTS{'time_override'},
+            'read=i'      => \$OPTS{'read_lines'},
+            'uncached'    => \$OPTS{'uncached'},  # experimental, undocumented
+            'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
 
-    my $result = GetOptions(
-        'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
-        'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
-        'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
-#        'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
-#        'time|t=s'    => \$OPTS{'timespec'},
-        'override|o'  => \$OPTS{'time_override'},
-        'read=i'      => \$OPTS{'read_lines'},
-        'uncached'    => \$OPTS{'uncached'},  # experimental, undocumented
-        'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
+            'without|w=s' => \$OPTS{'without'},
+            'full|f'      => \$OPTS{'full'},
+            'user|u=s'    => sub { if ($OPTS{'report'} eq 'summary') { $OPTS{'report'} = 'user'; $OPTS{'load'} = 'cache' } $OPTS{'user'} = $_[1]; $OPTS{'full'} = 1 },
+            'hourly'      => \$OPTS{'hourly_report'},
+            'reseller|r'  => \$OPTS{'reseller'},
 
-        'without|w=s' => \$OPTS{'without'},
-        'full|f'      => \$OPTS{'full'},
-        'user|u=s'    => sub { if ($OPTS{'report'} eq 'summary') { $OPTS{'report'} = 'user'; $OPTS{'load'} = 'cache' } $OPTS{'user'} = $_[1]; $OPTS{'full'} = 1 },
-        'hourly'      => \$OPTS{'hourly_report'},
-        'reseller|r'  => \$OPTS{'reseller'},
+            'scripts'     => sub { $OPTS{'report'} = 'script'; $OPTS{'load'} = 'no' },
+            'md5=s'       => sub { $OPTS{'report'} = 'md5'; $OPTS{'scriptmd5report'} = $_[1]; $OPTS{'load'} = 'no' },
+            'logins'      => sub { $OPTS{'report'} = 'logins' },
+            'helos'       => sub { $OPTS{'report'} = 'helos' },
+            'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
 
-        'scripts'     => sub { $OPTS{'report'} = 'script'; $OPTS{'load'} = 'no' },
-        'md5=s'       => sub { $OPTS{'report'} = 'md5'; $OPTS{'scriptmd5report'} = $_[1]; $OPTS{'load'} = 'no' },
-        'logins'      => sub { $OPTS{'report'} = 'logins' },
-        'helos'       => sub { $OPTS{'report'} = 'helos' },
-        'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
+            'load=s'      => sub { $OPTS{'load'} = 'cache'; SpamReport::Data::resolve($_[1]); $OPTS{'save'} = 0 },
+            'loadcron=s'  => sub { $OPTS{'load'} = 'cron'; SpamReport::Data::resolvecron($_[1]); $OPTS{'save'} = 0 },
+            'save'        => \$OPTS{'save'},  # undocumented
+            'dump=s'      => \$OPTS{'dump'},
+            'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
 
-        'load=s'      => sub { $OPTS{'load'} = 'cache'; SpamReport::Data::resolve($_[1]); $OPTS{'save'} = 0 },
-        'loadcron=s'  => sub { $OPTS{'load'} = 'cron'; SpamReport::Data::resolvecron($_[1]); $OPTS{'save'} = 0 },
-        'save'        => \$OPTS{'save'},  # undocumented
-        'dump=s'      => \$OPTS{'dump'},
-        'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
+            'tag=s'       => sub { $SpamReport::Data::logpath =~ s/(?=\.gz)/.$_[1]/;
+                                   $SpamReport::Data::cronpath =~ s/(?=\.gz)/.$_[1]/;
+                                   $tag_flag = 1; },
+            'ls'          => sub { $OPTS{'report'} = 'cachels'; $OPTS{'load'} = 'no' },
+            'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
+            'update'      => sub { $OPTS{'op'} = 'update' },
+            'latest'      => sub { $OPTS{'load'} = 'cache' },
 
-        'tag=s'       => sub { $SpamReport::Data::logpath =~ s/(?=\.gz)/.$_[1]/;
-                               $SpamReport::Data::cronpath =~ s/(?=\.gz)/.$_[1]/;
-                               $tag_flag = 1; },
-        'ls'          => sub { $OPTS{'report'} = 'cachels'; $OPTS{'load'} = 'no' },
-        'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
-        'update'      => sub { $OPTS{'op'} = 'update' },
-        'latest'      => sub { $OPTS{'load'} = 'cache' },
-
-        'help|?'      => sub { HelpMessage() },
-        'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
-        'version'     => sub { VersionMessage(module_versions()) },
-    );
+            'help|?'      => sub { HelpMessage() },
+            'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
+            'version'     => sub { VersionMessage(module_versions()) },
+        );
+    }
 
     # XXX: reports that don't work with cache currently
     if ($OPTS{'load'} eq 'cache' && $OPTS{'report'} eq 'forwarders') {
         $OPTS{'load'} = 'cron';
     }
-    if ($OPTS{'op'} eq 'report' && $time_changed) {
+    if ($time_changed && $ecpp) {
+        warn "[WARNING] Non-default times requested.\n\n",
+             "* ec uses daily and hourly cache to speed up normal usage.\n",
+             "*\n",
+             "* Using non-default times can slow it down by a factor of 60x or more.\n\n";
+        $OPTS{'load'} = undef;
+        SpamReport::Data::disable()
+    }
+    elsif ($OPTS{'op'} eq 'report' && $time_changed) {
         die "${RED}[FAULT] Non-default times requested without --override flag!$NULL\n",
              "\n",
              "* spamreport uses daily and hourly cache to speed up normal usage.\n",
@@ -3882,6 +3885,58 @@ sub module_versions {
         $output .= "($v) $_\n"
     }
     $output
+}
+
+sub ec_usage {
+    print <<USAGE;
+ec(spamreport) - Version: $VERSION - Ryan Egesdahl and Julian Fondren
+
+Default usage, generates a report for a user, using the latest spamreport cache
+for the last three days of logs:
+
+  # ec <username>
+  # ec <domain>
+
+Get a report of all users on the server:
+
+  # ec root
+
+Search across all users for a reseller:
+
+  # ec -r <reseller username or domain>
+  # ec --reseller <reseller username or domain>
+
+---
+The default uses cache and three days of logs and is very fast (even when slow,
+it's still much faster than the alternatives) when this cache is available.
+You can change the time range from the default, but
+
+  1. the minimum resolution is one day.  If you ask for '2 hours', at 1AM this
+     will get you all of yesterday's logs as well.  At 2:01 AM you'll only get two
+     hours worth of logs.  At noon you'll get 12 hours worth of logs.
+
+  2. cache is no longer used, and logs will have to actually be parsed!
+---
+
+Parse the last <hours> worth of logs:
+
+  # ec -h <hours> <user or domain>
+  # ec --hours=<hours> <user or domain>
+
+Parse with a given start and end time:
+
+  # ec --start '<start time>' --end '<end time>' <user or domain>
+
+Produce this output:
+
+  # ec --help
+
+Produce version information:
+
+  # ec --version
+
+USAGE
+    exit 1;
 }
 
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
