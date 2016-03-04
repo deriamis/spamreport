@@ -128,7 +128,8 @@ my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
         responsibility domain_responsibility bounce_responsibility owner_responsibility
         bounce_owner_responsibility mailbox_responsibility forwarder_responsibility
-        young_users young_mailboxes outip outscript hourly_volume total_outgoing total_bounce
+        young_users young_mailboxes outip outscript hourly_volume hourly_bounce_volume
+        total_outgoing total_bounce
         OPTS
     );
 sub savecron {
@@ -1681,23 +1682,53 @@ sub user_hour_report {
     return unless $data->{'OPTS'}{'hourly_report'};
     my $r = "----------------------------------------\n\n";
     my $volumes;
+    my $bounces;
+    my %keys;
+    my %ratios;
     if ($user eq 'root') {
         for my $u (keys %{$data->{'hourly_volume'}}) {
             for (keys %{$data->{'hourly_volume'}{$u}}) {
-                $volumes->{$_} += $data->{'hourly_volume'}{$u}{$_}
+                $keys{$_}++; $volumes->{$_} += $data->{'hourly_volume'}{$u}{$_};
+            }
+            for (keys %{$data->{'hourly_bounce_volume'}{$u}}) {
+                $keys{$_}++; $bounces->{$_} += $data->{'hourly_bounce_volume'}{$u}{$_};
             }
         }
     }
     elsif ($isreseller) {
         for my $resold ($user, @{$data->{'owner2user'}{$user}}) {
             for (keys %{$data->{'hourly_volume'}{$resold}}) {
-                $volumes->{$_} += $data->{'hourly_volume'}{$resold}{$_}
+                $keys{$_}++; $volumes->{$_} += $data->{'hourly_volume'}{$resold}{$_};
+            }
+            for (keys %{$data->{'hourly_bounce_volume'}{$resold}}) {
+                $keys{$_}++; $bounces->{$_} += $data->{'hourly_bounce_volume'}{$resold}{$_};
             }
         }
     }
-    else { $volumes = $data->{'hourly_volume'}{$user} }
-    for (sort keys %$volumes) {
-        $r .= "$_: " . commify($volumes->{$_}) . "\n"
+    else {
+        $volumes = $data->{'hourly_volume'}{$user};
+        $bounces = $data->{'hourly_bounce_volume'}{$user};
+        $keys{$_}++ for keys %$volumes;
+        $keys{$_}++ for keys %$bounces;
+    }
+
+    my @widths = (0, 0, 0);
+    for (keys %keys) {
+        width commify($volumes->{$_}) => $widths[0];
+        width commify($bounces->{$_}) => $widths[1];
+        $ratios{$_} = sprintf("%.1f", 100*$bounces->{$_}/$volumes->{$_}) if $volumes->{$_};
+        width $ratios{$_} => $widths[2] if $ratios{$_};
+    }
+
+    $r .= sprintf("%10s %2s: %$widths[0]s %$widths[1]s %$widths[2]s\n",
+                  '', '', 'OUT', '<>', ('%'x$widths[2]));
+    my $day;
+    for (map { [$_, split ' '] } sort keys %keys) {
+        my ($m, $b) = ($volumes->{$_->[0]}, $bounces->{$_->[0]});
+        $r .= sprintf("%10s %s: %$widths[0]s %$widths[1]s %$widths[2]s\n",
+            ($_->[1] eq $day ? '' : ($day = $_->[1])),
+            $_->[2],
+            commify($m), commify($b), $ratios{$_->[0]})
     }
     $r .= "\n";
     $r
@@ -2828,6 +2859,7 @@ sub parse_exim_mainlog {
                     $data->{'mailbox_responsibility'}{$1}++;
                 }
                 $data->{'bounce_responsibility'}{$user}++;
+                $data->{'hourly_volume'}{$user}{substr($line,0,13)}++;  # counting as outgoing
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
                 $data->{'mail_ids'}{$mailid}{'subject'} = $subject if defined $subject;
             }
@@ -2836,6 +2868,7 @@ sub parse_exim_mainlog {
                 $data->{'domain_responsibility'}{$1}++;
                 $data->{'mailbox_responsibility'}{$to[0]}++;
                 $data->{'bounce_responsibility'}{$user}++;
+                $data->{'hourly_bounce_volume'}{$user}{substr($line,0,13)}++;
                 $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
                         if exists $data->{'user2owner'}{$user}
                                && $data->{'user2owner'}{$user} ne 'root';
