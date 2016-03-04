@@ -1075,7 +1075,7 @@ sub print_script_info {
 
 sub analyze_mailboxes {
     for my $mb (keys %{$data->{'mailbox_responsibility'}}) {
-        next unless $mb =~ /(\S+?)@(\S+)/;
+        next unless $mb =~ /(\S+?)[\@+](\S+)/;
         my $user = $data->{'domain2user'}{$2};
         if ($user) {
             my $dir = "/home/$user/mail/$2/$1";
@@ -2736,7 +2736,7 @@ sub parse_queued_mail_data {
         $h_ref->{'state'} = $state;
         $h_ref->{'location'} = 'queue';
     
-        ($h_ref->{'sender_domain'}) = $h_ref->{'sender'} =~ m/@(.*)$/;
+        ($h_ref->{'sender_domain'}) = $h_ref->{'sender'} =~ m/[\@+](.*)$/;
 
         if ($h_ref->{'type'} ne 'bounce' && exists($data->{'domain2user'}{lc($h_ref->{'sender_domain'})})) {
             # not a bounce and for a local domain?  it may be an issue but we don't care here
@@ -2746,7 +2746,7 @@ sub parse_queued_mail_data {
         }
 
         for (@{$h_ref->{'recipients'}}) {
-            if ( $_ =~ m/@(.*)$/ ) {
+            if ( $_ =~ m/[\@+](.*)$/ ) {
                 $h_ref->{'recipient_domains'}{$1}++;
                 if (exists $data->{'domain2user'}{$1}) {
                     $h_ref->{'recipient_users'}{$data->{'domain2user'}{$1}}++
@@ -2831,7 +2831,7 @@ sub parse_exim_mainlog {
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
                 $data->{'mail_ids'}{$mailid}{'subject'} = $subject if defined $subject;
             }
-            elsif (@to == 1 && $to[0] =~ /\@(\S+)/ and exists $data->{'domain2user'}{$1}) {
+            elsif (@to == 1 && $to[0] =~ /[\@+](\S+)/ and exists $data->{'domain2user'}{$1}) {
                 my $user = $data->{'domain2user'}{$1};
                 $data->{'domain_responsibility'}{$1}++;
                 $data->{'mailbox_responsibility'}{$to[0]}++;
@@ -2852,7 +2852,7 @@ sub parse_exim_mainlog {
             $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
             my $to = $1;
             my @to = split / /, $to;
-            my @to_domain = grep { defined $_ } map { /@(.*)/ && $1 } @to;
+            my @to_domain = grep { defined $_ } map { /[\@+](.*)/ && $1 } @to;
             if ($to !~ tr/@//) {
                 # this is to a local users, only.  probably cronjob or like.
                 # discard.
@@ -2962,7 +2962,7 @@ sub who {
             last
         }
     }
-    if ($who =~ /@(.*)/ and exists $data->{'domain2user'}{$1}) {
+    if ($who =~ /[\@+](.*)/ and exists $data->{'domain2user'}{$1}) {
         $who = $data->{'domain2user'}{$1};
     }
     $who
