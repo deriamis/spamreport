@@ -30,10 +30,11 @@ $INC{'SpamReport/GeoIP.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Data;
 use Exporter;
-use Storable qw(fd_retrieve);
+use Storable qw(fd_retrieve store_fd);
 use POSIX qw(strftime);
 use Fcntl qw(:flock);
 use File::Which qw ( which );
+use File::Temp;
 use common::sense;
 
 use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
@@ -43,8 +44,8 @@ $VERSION = '2016022601';
 @EXPORT = qw($data);
 my $gzip = which('gzip');
 
-$logpath = "/opt/hgmods/logs/spamreport.dat";
-$cronpath = "/opt/hgmods/logs/spamreportcron.dat";
+$logpath = "/opt/hgmods/logs/spamreport.dat.gz";
+$cronpath = "/opt/hgmods/logs/spamreportcron.dat.gz";
 
 $data = {};
 $MAX_RETAINED = 4;
@@ -52,7 +53,7 @@ $loadcronfail = '';
 
 sub retrieve {
     my ($path, $lock) = @_;
-    if ($path =~ /\.gz$/) {
+    if ($path =~ /\.gz(?:$|\.)/) {
         open my $fd, '-|', $gzip, '-dc', $path
             or die "Couldn't fork $gzip for $path : $!";
         if ($lock) { flock $fd, LOCK_SH or die "Couldn't lock $path : $!"; }
@@ -74,7 +75,7 @@ sub lock_store {
     my ($ref, $path) = @_;
     if ($path =~ /\.gz$/) {
         $path =~ m,^(.*)/[^/]+$, or die "Couldn't find directory component of $path";
-        my $tmp = File::Temp::tmpnam($1, "srgzipout");
+        my $tmp = File::Temp::mktemp($1."/srgzipout-XXXXXX");
 
         open my $fd, '|-', "$gzip > $tmp"
             or die "Couldn't fork $gzip for $path : $!";
@@ -97,14 +98,19 @@ sub loadcron {
         return
     }
     else { $path = $cronpath }
-    my ($fresh, $date) = _times($path);
-    if ($fresh) {
-        print "Loading $path ($date)\n";
-        return retrievecron($path)
+    if (-e $path) {
+        my ($fresh, $date) = _times($path);
+        if ($fresh) {
+            print "Loading $path ($date)\n";
+            return retrievecron($path)
+        }
+        else {
+            rotatecron();
+            $loadcronfail = "file is too old: $path ($date)";
+        }
     }
     else {
-        rotatecron();
-        $loadcronfail = "file is too old: $path ($date)";
+        $loadcronfail = "no such fail: $path";
     }
     return;
 }
@@ -130,6 +136,7 @@ sub savecron {
     for (keys %cronkeys) {
         $newdata{$_} = $data->{$_}
     }
+    print "Saving cron $cronpath\n";
     lock_store \%newdata, $cronpath;
     #DumpFile($cronpath, \%newdata);
 }
@@ -154,6 +161,7 @@ sub load {
     my ($path) = @_;
     $path = $logpath unless defined $path;
     my ($fresh, $date) = _times($path);
+    return unless $fresh;
     print "Loading $path ($date)\n";
     #$data = LoadFile($path);
     $data = lock_retrieve($path);
@@ -161,6 +169,7 @@ sub load {
 
 sub save {
     rotate();
+    print "Saving cache $logpath";
     #DumpFile($logpath, $data);
     lock_store $data, $logpath;
 }
@@ -171,9 +180,9 @@ sub rotate {
     my @logs = sort { -M $a <=> -M $b } glob "$path*";
     unlink for @logs[$MAX_RETAINED..$#logs];
     for (sort { -M $b <=> -M $a } @logs) {
-        next unless /.(\d+)$/;
+        next unless /.(\d+)\.gz$/;
         my ($this, $next) = ($1, $1 + 1);
-        rename "$path.$this", "$path.$next";
+        rename "$path.$this.gz", "$path.$next.gz";
     }
     rename $path, "$path.1";
 }
@@ -210,11 +219,13 @@ sub details {
 # --ls displays files like '.3' '.test' '.1(cron)'.  load these (without (cron)).
 sub resolve {
     my ($name) = @_;
+    return $name if $name =~ m(^/);
     $logpath .= $name;
     die "Unresolved cache name: $name" unless -f $logpath;
 }
 sub resolvecron {
     my ($name) = @_;
+    return $name if $name =~ m(^/);
     $cronpath .= $name;
     die "Unresolved croncache name: $name" unless -f $cronpath;
 }
@@ -886,6 +897,7 @@ sub cache_ls {
     my @legend = qw(NAME SIZE EMAILS OUTGOING START HOURS);
     my @widths = map { length($_) } @legend;
     for (@details) {
+        $_->{'name'} =~ s/\.gz(?=\.|$)//;
         $_->{'name'} =~ s/spamreport(cron)?\.dat//;
         $_->{'name'} .= "(cron)" if defined $1;
         width $_->{'name'} => $widths[6];
@@ -2805,7 +2817,7 @@ sub parse_exim_mainlog {
                 }
             }
             $data->{'mail_ids'}{$mailid}{'recipients'} = \@to;
-            if ($line =~ / A=dovecot_\S+:([^\@+]+(?:[\@+](\S+))?)/) {
+            if ($line =~ / A=dovecot_\S+:([^\@+\s]+(?:[\@+](\S+))?)/) {
                 # authenticated bounces!
                 $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
                 my $user = $1;
@@ -2855,7 +2867,7 @@ sub parse_exim_mainlog {
                 $data->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
             }
             $data->{'mail_ids'}{$mailid}{'subject'} = $subject;
-            if ($line =~ / A=dovecot_\S+:([^\@+]+(?:[\@+](\S+))?)/) {
+            if ($line =~ / A=dovecot_\S+:([^\@+\s]+(?:[\@+](\S+))?)/) {
                 $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
                 $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2 if defined $2;
             }
@@ -3308,8 +3320,8 @@ sub check_options {
         'dump=s'      => \$OPTS{'dump'},
         'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
 
-        'tag=s'       => sub { $SpamReport::Data::logpath .= ".$_[1]";
-                               $SpamReport::Data::cronpath .= ".$_[1]";
+        'tag=s'       => sub { $SpamReport::Data::logpath =~ s/(?=\.gz)/.$_[1]/;
+                               $SpamReport::Data::cronpath =~ s/(?=\.gz)/.$_[1]/;
                                $tag_flag = 1; },
         'ls'          => sub { $OPTS{'report'} = 'cachels'; $OPTS{'load'} = 'no' },
         'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
@@ -3710,9 +3722,9 @@ sub main {
 
     if ($OPTS{'load'} eq 'cron') {
         SpamReport::Data::loadcron();
-        $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
         if (keys %$data) {
             $loadedcron = 1;
+            $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
         } else {
             warn "${RED}daily cache not not loaded! $SpamReport::Data::loadcronfail\n"
                . "This run will take much longer than normal$NULL\n"
@@ -3751,17 +3763,24 @@ sub main {
     # op: report
 
 
+    my $cacheloaded;
     if ($OPTS{'load'} eq 'no') {
         # no need to load data
         SpamReport::Output::head_info($data->{'OPTS'});
         SpamReport::Tracking::Scripts::save() if $OPTS{'save'};
     } elsif ($OPTS{'load'} eq 'cache') {
-        SpamReport::Data::load();
+        SpamReport::Data::load() && $cacheloaded++
+    }
+
+    if ($OPTS{'load'} eq 'cache' && $cacheloaded) {
         userfy_args();
         $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
         $data->{'OPTS'} = \%OPTS;
         SpamReport::Output::head_info($data->{'OPTS'});
-    } else {
+    } elsif ($OPTS{'load'} ne 'no') {
+        if (!$cacheloaded) {
+            "${RED}failed to load cache!  This run may take much longer than normal.$NULL\n";
+        }
         SpamReport::Output::head_info($data->{'OPTS'});
         setup_cpanel();
         userfy_args();
@@ -3771,9 +3790,9 @@ sub main {
         parse_exim_queue() if $OPTS{'want_queue'};
         parse_exim_logs() if $OPTS{'want_eximlog'};
         parse_dovecot_logs() if $OPTS{'want_maillog'};
-        SpamReport::Data::save() if $OPTS{'save'} && !($OPTS{'load'} eq 'cache'
-            or defined($OPTS{'user'})
-            or defined($OPTS{'without'}));
+        SpamReport::Data::save() if $OPTS{'save'} && !$cacheloaded
+            && !(defined($OPTS{'user'}) or
+                 defined($OPTS{'without'}));
         SpamReport::Tracking::Scripts::save() if $OPTS{'save'};
     }
     SpamReport::Tracking::Suspensions::load();

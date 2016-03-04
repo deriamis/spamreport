@@ -1,0 +1,89 @@
+ABOUT
+
+    This build system produces a 'fatpacked' Perl script that, with some file
+    assets for geolocation purposes, is useful for reporting on and
+    investigating sources of spam and of other anomalous email usage.
+
+    spamreport's documentation is in spamreport --man; briefer information is
+    in spamreport --help.
+
+BUILDING (for the first time ever)
+
+    make          # this will work for a bit and then fail
+    make depend
+    make
+
+BUILDING
+
+    make
+
+(RE)BUILDING
+
+    If only the existing SpamReport modules are changed, 'make' is enough
+    to rebuild build/spamreport.  If modules have changed, you may need to edit
+    cpanfile and then run 'make distclean' before running 'make', to get the
+    new dependencies.
+
+BUILD REQUIREMENTS
+
+    cpanm and perl must be in PATH
+
+DISTRIBUTION
+
+    The following files in build/ must exist in /root/bin:
+
+        spamreport
+        ipscountry.dat
+        ip.gif
+        cc.gfi
+
+    You can then run spamreport as normal.  It will create files under
+    /opt/hgmods/logs , and will create this directory if necessary.  If --dump is
+    provided, spamreport will check to ensure that the destination is
+    reasonable (it exists; it's owned by root), but will otherwise place mode-0600
+    files where requested.
+
+    NB. you can run spamreport from anywhere, but those assets must be in
+    /root/bin .
+
+USAGE
+
+    See: spamreport --help
+
+ALTERNATE USAGE
+
+    spamreport tries to behave in a eigshell-appropriate way if $RUSER is
+    unset.  (Presently this only means that some messages are suppressed.)
+
+    spamreport duplicates ecpp's flags and behavior if $0 is 'ec'
+
+CACHE
+
+    spamreport expects that, once a calendar day, the following command will be run:
+
+        spamreport --cron
+
+    and that at regular intervals over the course of a day, that the following
+    command is also run:
+
+        spamreport --update
+
+    These commands maintain A) a partial cache with just prior days' email
+    information, and B) a complete cache of all email information at the time of
+    invocation.
+
+    Most other investigative and reporting commands load just the prior days'
+    cache and then actively scan system log files and queues for current
+    information about the current calendar day.  With --latest , and in some
+    other cases, the complete cache is loaded and log-scanning is skipped as
+    much as possible.
+
+    If these cache files don't exist or are too old, spamreport will try to
+    make do.
+
+    Normal commands also update the complete cache, just like --update, when
+    this is sensible and when they have the information anyway.
+
+    The cache files are gzip-compressed Storable files.  Use --dump if you want
+    readable YAML files as well.
+
