@@ -24,10 +24,6 @@ BUILDING
     cpanfile and then run 'make distclean' before running 'make', to get the
     new dependencies.
 
-BUILD REQUIREMENTS
-
-    cpanm and perl must be in PATH
-
 DISTRIBUTION
 
     The following files in build/ must exist in /root/bin:
@@ -35,7 +31,7 @@ DISTRIBUTION
         spamreport
         ipscountry.dat
         ip.gif
-        cc.gfi
+        cc.gif
 
     You can then run spamreport as normal.  It will create files under
     /opt/hgmods/logs , and will create this directory if necessary.  If --dump is
