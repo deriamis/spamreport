@@ -4,14 +4,13 @@ BEGIN {
 package SpamReport::GeoIP;
 use Geo::IPfree;
 use IP::Country::Fast;
-use FindBin qw( $Bin );
 use vars qw($VERSION);
 $VERSION = '2016022601';
 
 my ($geo, $ipc);
 
 sub init {
-    $geo = Geo::IPfree->new("$Bin/ipscountry.dat");
+    $geo = Geo::IPfree->new("/root/bin/ipscountry.dat");
     $geo->Faster;
     $ipc = IP::Country::Fast->new;
 }
