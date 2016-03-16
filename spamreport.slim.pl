@@ -125,10 +125,8 @@ sub _times {
 
 my %cronkeys = map { ($_, 1) }
     qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
-        responsibility domain_responsibility bounce_responsibility owner_responsibility
-        bounce_owner_responsibility mailbox_responsibility forwarder_responsibility
         young_users young_mailboxes outip outscript hourly_volume hourly_bounce_volume
-        total_outgoing total_bounce
+        forwarder_responsibility
         OPTS
     );
 sub savecron {
@@ -869,9 +867,9 @@ sub email_search_results {
 sub analyze_results {
     SpamReport::Exim::analyze_queued_mail_data();
     #SpamReport::Exim::analyze_num_recipients();
-    analyze_mailboxes();
     SpamReport::Maillog::analyze_logins();
     analyze_user_indicators();
+    analyze_mailboxes();
     analyze_auth_mismatch();
 
     1;
@@ -1211,19 +1209,33 @@ my $hisource = qr/$RE{'spam'}{'hi_source'}/;
 my $spamtld  = qr/$RE{'spam'}{'spammy_tld'}/;
 my $hidest   = qr/$RE{'spam'}{'hi_destination'}/;
 sub analyze_user_indicators {
-    my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
     my %users;
-    my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
-    for (keys %{$data->{'responsibility'}}) {
-        $users{$_} = undef if $emails && $data->{'responsibility'}{$_} / $emails > $cutoff;
-    }
-    for (keys %{$data->{'bounce_responsibility'}}) {
-        $users{$_} = undef if $bounces && $data->{'bounce_responsibility'}{$_} / $bounces > $cutoff;
-    }
     for (values %{$data->{'mail_ids'}}) {
         my $user = $_->{'who'};
-        next unless exists $users{$user};
-        next if $_->{'type'} eq 'bounce';
+        if ($_->{'in_queue'}) { $data->{'total_queue'}++ }
+        if ($_->{'type'} eq 'bounce') {
+            $data->{'total_bounce'}++;
+            $data->{'bounce_responsibility'}{$user}++ if $user =~ /\S/ && $user !~ /[\@+]/;
+            if (defined $data->{'user2owner'}{$user} && $data->{'user2owner'}{$user} ne 'root') {
+                $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++;
+            }
+            if (defined $_->{'recipents'}[0]) {
+                $data->{'mailbox_responsibility'}{$_->{'recipents'}[0]}++
+            }
+            next
+        } else {
+            $data->{'total_outgoing'}++;
+            $data->{'responsibility'}{$user}++;;
+            if (defined $data->{'user2owner'}{$user} && $data->{'user2owner'}{$user} ne 'root') {
+                $data->{'owner_responsibility'}{$data->{'user2owner'}{$user}}++;
+            }
+            if ($data->{'auth_sender'} =~ /[\@+]/) {
+                $data->{'mailbox_responsibility'}{$data->{'auth_sender'}}++
+            }
+            elsif ($data->{'sender'} =~ /[\@+]/) {
+                $data->{'mailbox_responsibility'}{$data->{'sender'}}++
+            }
+        }
         $users{$user}{'total'}++;
         if ($_->{'subject'} =~ /^Account Details for |^Activate user account|^Welcome to/) {
             $users{$user}{'botmail'}++
@@ -1248,6 +1260,15 @@ sub analyze_user_indicators {
             $users{$user}{'boxtrapper'}++;
         }
     }
+
+    my $cutoff = $data->{'OPTS'}{'r_cutoff'} / 100;
+    my ($emails, $bounces) = ($data->{'total_outgoing'}, $data->{'total_bounce'});
+    for (keys %users) {
+        next if $emails && $data->{'responsibility'}{$_} / $emails > $cutoff;
+        next if $bounces && $data->{'bounce_responsibility'}{$_} / $bounces > $cutoff;
+        delete $users{$_}
+    }
+
     my $recently = time() - 7 * 24 * 3600;
     my @history = reverse history_since($recently);
     for my $user (keys %users) {
@@ -2755,8 +2776,6 @@ sub parse_queued_mail_data {
                             : exists $h_ref->{'local'}                ? ('local', $h_ref->{'ident'})
                             : $h_ref->{'host_auth'} =~ m/^dovecot_.*/ ? ('login', $h_ref->{'auth_id'})
                                                                       : ('relay', $h_ref->{'helo_name'});
-        $data->{'total_bounce'}++ if $type eq 'bounce';
-
         my $state = $h_ref->{'deliver_firsttime'} ? 'queued'
                   : $h_ref->{'frozen'}            ? 'frozen'
                                                   : 'thawed';
@@ -2784,16 +2803,8 @@ sub parse_queued_mail_data {
             }
         }
     
-        for (who($h_ref)) {
-            $h_ref->{'who'} = $_;
-            last if /@/ or !$new_email;
-            $data->{'responsibility'}{$_}++;
-            $data->{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
-                if exists $data->{'user2owner'}{$_}
-                && $data->{'user2owner'}{$_} ne 'root'
-        }
+        $h_ref->{'who'} = who($h_ref);
         $h_ref->{'in_queue'} = 1;
-        $data->{'total_queue'}++;
     }
 }
 
@@ -2854,28 +2865,18 @@ sub parse_exim_mainlog {
                 if (defined $2) {
                     $user = $data->{'domain2user'}{$2};
                     $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2;
-                    $data->{'domain_responsibility'}{$2}++;
-                    $data->{'mailbox_responsibility'}{$1}++;
                 }
-                $data->{'bounce_responsibility'}{$user}++;
                 $data->{'hourly_volume'}{$user}{substr($line,0,13)}++;  # counting as outgoing
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
                 $data->{'mail_ids'}{$mailid}{'subject'} = $subject if defined $subject;
             }
             elsif (@to == 1 && $to[0] =~ /[\@+](\S+)/ and exists $data->{'domain2user'}{$1}) {
                 my $user = $data->{'domain2user'}{$1};
-                $data->{'domain_responsibility'}{$1}++;
-                $data->{'mailbox_responsibility'}{$to[0]}++;
-                $data->{'bounce_responsibility'}{$user}++;
                 $data->{'hourly_bounce_volume'}{$user}{substr($line,0,13)}++;
-                $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
-                        if exists $data->{'user2owner'}{$user}
-                               && $data->{'user2owner'}{$user} ne 'root';
                 $data->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
                 $data->{'mail_ids'}{$mailid}{'who'} = $user;
             }
             $data->{'mail_ids'}{$mailid}{'type'} = 'bounce';
-            $data->{'total_bounce'}++;
         }
         elsif (substr($line,37,2) eq '<=' && $line =~ s/T="(.*?)(?<!\\)" //) {
             my $subject = $1;
@@ -2944,16 +2945,9 @@ sub parse_exim_mainlog {
                 delete $data->{'mail_ids'}{$mailid};
             } else {
                 $data->{'mail_ids'}{$mailid}{'helo'} = $1 if $line =~ / H=(.*?)(?= [A-Z]=)/;
-                $data->{'total_outgoing'}++;
-                $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
-                $data->{'mailbox_responsibility'}{lc($from)}++;
                 for ($data->{'mail_ids'}{$mailid}{'who'}) {
                     last if /@/;
                     $data->{'hourly_volume'}{$_}{substr($line,0,13)}++;
-                    $data->{'responsibility'}{$_}++;
-                    $data->{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
-                        if exists $data->{'user2owner'}{$_}
-                        && $data->{'user2owner'}{$_} ne 'root'
                 }
             }
         }
@@ -3711,10 +3705,8 @@ sub purge {
     for (keys %{$data->{'mail_ids'}}) {
         if (exists $users{$data->{'mail_ids'}{$_}{'who'}}) {
             if ($data->{'mail_ids'}{$_}{'type'} eq 'bounce') {
-                $data->{'total_bounce'}--;
                 $data->{'filtered_bounce'}++;
             } else {
-                $data->{'total_outgoing'}--;
                 $data->{'filtered_outgoing'}++;
             }
             delete $data->{'mail_ids'}{$_};
