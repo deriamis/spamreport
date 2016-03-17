@@ -2820,37 +2820,39 @@ sub parse_exim_mainlog {
     }
     for my $line ( @lines ) {
        next unless $line =~ m(
-            ^(\S{10}) \s \S{8}        # $1 date
+            ^(\S{10}) \s \S{8}        # $1 date  $2:$3:$4
                (?: \s \[\d+\])? \s    # VPS pid
-            (?: (\S{16})              # $2 mailid
-                \s (?: (<= \s <>)     # $3
-                     | (<=)           # $4
+            (?: (\S{16})              # $5 mailid
+                \s (?: (<= \s <>)     # $6
+                     | (<=)           # $7
                      | \*\* .* R=enforce_mail_permissionsHG:
                         \s Domain \s (\S+) \s has \s exceeded \s the \s max \s emails)
-             |  (SMTP \s connection \s outbound)     # $6
-             |  cwd=(/home\S+)(?!.*-FCronDaemon.*$)) # $7
+             |  (SMTP \s connection \s outbound)     # $9
+             |  cwd=(/home\S+)(?!.*-FCronDaemon.*$)) # $10
         )x;
         unless (exists $days{$1}) {
             $in_zone->[0] = 0;
             return
         }
-        if ( defined $7 ) {
+        if ( defined $10 ) {
             $data->{'scriptdirs'}{$7}++;
             next
         }
-        if ($6) {
+        if ($9) {
             next unless $line =~ / I=(\S+) S=\S+ F=(.+)/;
             $data->{'outscript'}{$2}++;
             SpamReport::Tracking::Scripts::script($2, $1);
             next;
         }
-        if ( defined $5 ) {  
+        if ( defined $8 ) {
             $data->{'discarded_users'}{$data->{'domain2user'}{$5}}++;
             $data->{'mail_ids'}{$2}{'500_discarded'}++;
             $data->{'total_discarded'}++;
             next;
         }
         my ($date, $mailid, $bounce, $recv) = ($1, $2, $3, $4);
+        $data->{'mail_ids'}{$mailid}{'date'} = $1;
+        $data->{'mail_ids'}{$mailid}{'time'} = $2*3600 + $3*60 + $4;
 
         my $subject;
         $subject = $1 if $line =~ s/ T="(.*)"//;
@@ -3266,6 +3268,7 @@ my %OPTS = (
     'search_hours'  => 72,
     'start_time'    => 0,
     'end_time'      => scalar CORE::localtime($now),
+    'around'        => undef,
     'time_override' => undef,
     'read_lines'    => 10000,
     'r_cutoff'      => 1.0,
@@ -3322,6 +3325,7 @@ sub check_options {
             'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
             'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
             'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
+            'around|a=s'  => \$OPTS{'around'},  # undocumented, experimental
 #            'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
             'reseller|r'  => \$OPTS{'reseller'},
             'help|?'      => sub { ec_usage() },
@@ -3334,6 +3338,7 @@ sub check_options {
             'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
             'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
             'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
+            'around|a=s'  => \$OPTS{'around'},  # undocumented, experimental
 #            'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
 #            'time|t=s'    => \$OPTS{'timespec'},
             'override|o'  => \$OPTS{'time_override'},
@@ -3371,6 +3376,21 @@ sub check_options {
             'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
             'version'     => sub { VersionMessage(module_versions()) },
         );
+    }
+    if (defined $OPTS{'around'}) {
+        my %around;
+        my ($sec, $min, $hour) = (CORE::localtime(str2time($OPTS{'around'})))[0,1,2];
+        my $daytime = 3600*$hour + 60*$min + $sec;
+        $around{'date'}{POSIX::strftime("%F", CORE::localtime($OPTS{'around'}))}
+            = $daytime;
+        if ($daytime < 3600) {
+            $around{'date'}{POSIX::strftime("%F", CORE::localtime($OPTS{'around'} - 3600))}
+                = 24*3600;
+        } elsif ($daytime > (23*3600)) {
+            $around{'date'}{POSIX::strftime("%F", CORE::localtime($OPTS{'around'} + 3600))}
+                = 0;
+        }
+        $OPTS{'around'} = \%around;
     }
 
     # XXX: reports that don't work with cache currently
@@ -3747,6 +3767,28 @@ sub purge {
     }
 }
 
+sub narrow {
+    my ($around) = @_;
+    for (keys %{$data->{'mail_ids'}}) {
+        unless (exists $around->{$data->{'mail_ids'}{$_}{'date'}}
+            && abs($around->{$data->{'mail_ids'}{$_}{'date'}}
+                    - $data->{'mail_ids'}{$_}{'time'}) < 3600) {
+            my $user = $data->{'mail_ids'}{$_}{'who'};
+            my $owner = $data->{'user2owner'}{$user};
+            $data->{'responsibility'}{$user}-- if $data->{'responsibility'}{$user};
+            $data->{'owner_responsibility'}{$owner}-- if $data->{'owner_responsibility'}{$owner};
+            if ($data->{'mail_ids'}{$_}{'type'} eq 'bounce') {
+                $data->{'total_bounce'}--;
+                $data->{'filtered_bounce'}++;
+            } else {
+                $data->{'total_outgoing'}--;
+                $data->{'filtered_outgoing'}++;
+            }
+            delete $data->{'mail_ids'}{$_};
+        }
+    }
+}
+
 sub userfy_args {
     $OPTS{'without'} = [map { user($_) } split ' ', $OPTS{'without'}]
         if defined $OPTS{'without'};
@@ -3850,6 +3892,7 @@ sub main {
     push @to_purge, @{$OPTS{'without'}} if $OPTS{'without'};
     push @to_purge, SpamReport::Tracking::Suspensions::ticketed_users() unless $OPTS{'full'};
     purge(@to_purge) if @to_purge;
+    narrow($OPTS{'around'}) if defined $OPTS{'around'};
     
     if ($OPTS{'report'} eq 'user') {
         my $isreseller = $OPTS{'reseller'} || $OPTS{'user'} eq 'root';
