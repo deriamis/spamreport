@@ -877,7 +877,7 @@ sub analyze_results {
 
 sub print_results {
     print_queue_results() if exists $data->{'queue_top'};
-    #print_recipient_results() if exists $data->{'suspects'}{'num_recipients'};
+    #print_recipient_results() if exists $data->{'num_recipients'};
     print_script_results();
     print_responsibility_results() if $data->{'responsibility'};
     print_auth_mismatch() if $data->{'auth_mismatch'};
@@ -1345,13 +1345,13 @@ sub history_since {
 
 sub print_recipient_results {
     my @widths = (0, 0);
-    for (values %{$data->{'suspects'}{'num_recipients'}}) {
+    for (values %{$data->{'num_recipients'}}) {
         my ($em, $ad) = (length($_->{'emails'}), length($_->{'addresses'}));
         setmax $em => $widths[0];
         setmax $ad => $widths[1];
     }
     
-    my %h = %{$data->{'suspects'}{'num_recipients'}};
+    my %h = %{$data->{'num_recipients'}};
     for (reverse sort { $h{$a}->{ratio} <=> $h{$b}->{ratio} } keys %h) {
         printf "%$widths[0]d %$widths[1]d %.4f num_recipients: $_\n",
             $h{$_}->{'emails'}, $h{$_}->{'addresses'}, $h{$_}->{'ratio'};
@@ -3013,7 +3013,7 @@ sub analyze_num_recipients {
     for (keys %suspects) {
         my $r = keys(%{$suspects{$_}}) / $emails{$_};
         if ($r >= 1.2) {
-            $data->{'suspects'}{'num_recipients'}{$_} = {
+            $data->{'num_recipients'}{$_} = {
                 addresses => scalar(keys(%{$suspects{$_}})),
                 emails => $emails{$_},
                 ratio => $r
