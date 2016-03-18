@@ -2820,39 +2820,41 @@ sub parse_exim_mainlog {
     }
     for my $line ( @lines ) {
        next unless $line =~ m(
-            ^(\S{10}) \s \S{8}        # $1 date  $2:$3:$4
-               (?: \s \[\d+\])? \s    # VPS pid
-            (?: (\S{16})              # $5 mailid
-                \s (?: (<= \s <>)     # $6
-                     | (<=)           # $7
-                     | \*\* .* R=enforce_mail_permissionsHG:
-                        \s Domain \s (\S+) \s has \s exceeded \s the \s max \s emails)
-             |  (SMTP \s connection \s outbound)     # $9
-             |  cwd=(/home\S+)(?!.*-FCronDaemon.*$)) # $10
+            ^(\S{10}) \s (\d\d):(\d\d):(\d\d)  # $1 date  $2:$3:$4
+               (?: \s \[\d+\])? \s             # VPS pid
+            (?: (\w{6}-\w{6}-\w{2}) \s         # $5 mailid
+                (?: (<= \s <>)                 # $6
+                  | (<=)                       # $7
+                  | SMTP \s connection \s outbound \s
+                    \d+ \s \5 \s \S+ \s \S+ \s
+                    I=(\S+) \s S=\S+ \s F=(\S+)$   # $8 $9
+                  | \*\* (?>.* R=)enforce_mail_permissionsHG:
+                    \s Domain \s (\S+) \s has \s exceeded \s the \s max \s emails) $10
+             | cwd=(/home\S+)(?!.*-FCronDaemon)) # $11
         )x;
-        unless (exists $days{$1}) {
+        my ($date, $time, $mailid, $bounce, $recv, $script_ip, $script_file, $exceed, $cwd) =
+            ($1, $2*3600 + $3*60 + $4, $5, $6, $7, $8, $9, $10, $11);
+        unless (exists $days{$date}) {
             $in_zone->[0] = 0;
             return
         }
-        if ( defined $10 ) {
-            $data->{'scriptdirs'}{$7}++;
+        if ( defined $cwd ) {
+            $data->{'scriptdirs'}{$cwd}++;
             next
         }
-        if ($9) {
-            next unless $line =~ / I=(\S+) S=\S+ F=(.+)/;
-            $data->{'outscript'}{$2}++;
-            SpamReport::Tracking::Scripts::script($2, $1);
+        if ( defined $script_ip ) {
+            $data->{'outscript'}{$script_file}++;
+            SpamReport::Tracking::Scripts::script($script_file, $script_ip);
             next;
         }
-        if ( defined $8 ) {
-            $data->{'discarded_users'}{$data->{'domain2user'}{$5}}++;
+        if ( defined $exceed ) {
+            $data->{'discarded_users'}{$data->{'domain2user'}{$mailid}}++;
             $data->{'mail_ids'}{$2}{'500_discarded'}++;
             $data->{'total_discarded'}++;
             next;
         }
-        my ($date, $mailid, $bounce, $recv) = ($1, $2, $3, $4);
-        $data->{'mail_ids'}{$mailid}{'date'} = $1;
-        $data->{'mail_ids'}{$mailid}{'time'} = $2*3600 + $3*60 + $4;
+        $data->{'mail_ids'}{$mailid}{'date'} = $date;
+        $data->{'mail_ids'}{$mailid}{'time'} = $time;
 
         my $subject;
         $subject = $1 if $line =~ s/ T="(.*)"//;
@@ -3428,7 +3430,8 @@ sub check_options {
     $OPTS{'want_maillog'} = 1 if $OPTS{'op'} ne 'report' or $OPTS{'report'} eq 'logins';
     $OPTS{'want_eximlog'} = 1 unless $OPTS{'report'} eq 'md5'
                                   or $OPTS{'report'} eq 'logins';
-    $OPTS{'want_scripts'} = 1 if $OPTS{'want_eximlog'} or $OPTS{'report'} eq 'md5';
+
+    $OPTS{'want_scripts'} = 1 if $OPTS{'report'} eq 'script';
     # eximdb: unused
 
     if ( $OPTS{'start_time'} && $OPTS{'start_time'} !~ m/^\d+$/ ) {
@@ -3473,17 +3476,17 @@ sub check_options {
     my (%dovecot, %exim);
     for (my $i = $OPTS{'end_time'}; $i >= $OPTS{'start_time'}; $i -= 3600 * 24) {
         $exim{POSIX::strftime("%F", CORE::localtime($i))}++;
-        $dovecot{POSIX::strftime("%b %d", CORE::localtime($i))}++;
+        $dovecot{POSIX::strftime("%b %e", CORE::localtime($i))}++;
     }
     $OPTS{'dovecot_days'} = \%dovecot;
     $OPTS{'exim_days'} = \%exim;
     $OPTS{'exim_today'} = POSIX::strftime("%F", CORE::localtime());
-    $OPTS{'dovecot_today'} = POSIX::strftime("%b %d", CORE::localtime());
+    $OPTS{'dovecot_today'} = POSIX::strftime("%b %e", CORE::localtime());
 
     my (%dovecotpost, %eximpost);
     for (my $i = $OPTS{'end_time'} + 3600 * 24; $i < $OPTS{'end_time'} + 3600 * 24 * 4; $i += 3600 * 24) {
         $eximpost{POSIX::strftime("%F", CORE::localtime($i))}++;
-        $dovecotpost{POSIX::strftime("%b %d", CORE::localtime($i))}++;
+        $dovecotpost{POSIX::strftime("%b %e", CORE::localtime($i))}++;
     }
     $OPTS{'dovecot_postdays'} = \%dovecotpost;
     $OPTS{'exim_postdays'} = \%eximpost;
