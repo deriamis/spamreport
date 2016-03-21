@@ -86,6 +86,57 @@ sub lock_store {
     }
 }
 
+sub loadpreparse {
+    for (@_) {
+        open my $f, '-|', $gzip, '-dc', "/opt/hgmods/logs/$_.gz"
+            or next;
+        $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor");
+        while (defined($_ = <$f>)) {
+            chomp;
+            my $email;
+            for (unpack("(Z*)*", $_)) {
+                my ($k, $v) = split /:/, $_, 2;
+                $email->{$k} = $v;
+            }
+            push @{$data->{'mailids'}}, $email
+        }
+    }
+}
+
+sub open_preparse {
+    for (@_) {
+        open $data->{'out'}{$_}, '|-', "$gzip > /opt/hgmods/logs/$_.gz"
+            or die "Couldn't fork $gzip for /opt/hgmods/logs/$_.gz : $!";
+    }
+}
+sub close_preparse {
+    for (keys %{$data->{'out'}}) {
+        close $data->{'out'}{$_};
+        delete $data->{'out'}{$_};
+        Storable::lock_store($data->{$_}, "/opt/hgmods/logs/$_.stor") if exists $data->{$_}
+    }
+}
+
+sub merge_counters {
+    for my $day (@_) {
+        for (qw(total_discarded total_outgoing total_bounce total_outgoing)) {
+            $data->{$_} += $data->{$day}{$_}
+        }
+        for my $key (qw(scriptdirs outscript discarded_users script
+                        domain_responsibility mailbox_responsibility
+                        bounce_responsibility recipient_users responsibility
+                        owner_responsibility)) {
+            $data->{$key}{$_} += $data->{$day}{$key}{$_} for keys %{$data->{$day}{$key}}
+        }
+        for my $key (qw(hourly_volume hourly_bounce_volume
+                        bounce_owner_responsibility forwarder_responsibility)) {
+            for my $subkey (keys %{$data->{$day}{$key}}) {
+                $data->{$key}{$subkey}{$_} += $data->{$day}{$key}{$subkey}{$_} for keys %{$data->{$day}{$key}{$subkey}}
+            }
+        }
+    }
+}
+
 sub loadcron {
     my ($path) = @_;
     if (defined $path && -e $path) {
@@ -1132,7 +1183,7 @@ sub print_responsibility_results {
                 SpamReport::Annotate::owner(@_, "bounce_owner_responsibility", "bounce_responsibility")
         });
     }
-    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails$excl", $data->{'total_discarded'}, \&SpamReport::Annotate::user);
+    percent_report($data->{'responsibility'}, $emails, $cutoff, "outgoing emails$excl", $data->{'total_discarded'}||undef, \&SpamReport::Annotate::user);
     percent_report($data->{'bounce_responsibility'}, $bounces, $cutoff, "bouncebacks$exclbounce", undef, \&SpamReport::Annotate::user);
 }
 
@@ -2838,17 +2889,17 @@ sub parse_exim_mainlog {
             return
         }
         if ( defined $cwd ) {
-            $data->{'scriptdirs'}{$cwd}++;
+            $data->{$date}{'scriptdirs'}{$cwd}++;
             next
         }
         if ( defined $script_ip ) {
-            $data->{'outscript'}{$script_file}++;
+            $data->{$date}{'outscript'}{$script_file}++;
             SpamReport::Tracking::Scripts::script($script_file, $script_ip);
             next;
         }
         if ( defined $exceed ) {
-            $data->{'discarded_users'}{$data->{'domain2user'}{$exceed}}++;
-            $data->{'total_discarded'}++;
+            $data->{$date}{'discarded_users'}{$data->{'domain2user'}{$exceed}}++;
+            $data->{$date}{'total_discarded'}++;
             next;
         }
         my $email = { date => $date, $time => $time };
@@ -2856,14 +2907,14 @@ sub parse_exim_mainlog {
 
         if ($bounce) {
             next unless $line =~ /.*for (.*)$/;  # leading .* causes it to backtrack from the right
+            $email->{'recipients'} = $1;
             my @to = split / /, $1;
             $line =~ / S=(\S+)/; for my $script ($1) {
                 if (defined $script && $script !~ /@/ && $script =~ /\D/) {
                     $email->{'script'} = $script;
-                    $data->{'script'}{$script}++;
+                    $data->{$date}{'script'}{$script}++;
                 }
             }
-            $email->{'recipients'} = \@to;
             if ($line =~ / A=dovecot_\S+:([^\@+\s]+(?:[\@+](\S+))?)/) {
                 # authenticated bounces!
                 $email->{'auth_sender'} = $1;
@@ -2871,34 +2922,39 @@ sub parse_exim_mainlog {
                 if (defined $2) {
                     $user = $data->{'domain2user'}{$2};
                     $email->{'auth_sender_domain'} = $2;
-                    $data->{'domain_responsibility'}{$2}++;
-                    $data->{'mailbox_responsibility'}{$1}++;
+                    $data->{$date}{'domain_responsibility'}{$2}++;
+                    $data->{$date}{'mailbox_responsibility'}{$1}++;
                 }
-                $data->{'bounce_responsibility'}{$user}++;
-                $data->{'hourly_volume'}{$user}{substr($line,0,13)}++;  # counting as outgoing
+                $data->{$date}{'bounce_responsibility'}{$user}++;
+                $data->{$date}{'hourly_volume'}{$user}{substr($line,0,13)}++;  # counting as outgoing
                 $email->{'who'} = $user;
             }
             elsif (@to == 1 && $to[0] =~ /[\@+](\S+)/ and exists $data->{'domain2user'}{$1}) {
                 delete $email->{'subject'};
                 my $user = $data->{'domain2user'}{$1};
-                $data->{'domain_responsibility'}{$1}++;
-                $data->{'mailbox_responsibility'}{$to[0]}++;
-                $data->{'bounce_responsibility'}{$user}++;
-                $data->{'hourly_bounce_volume'}{$user}{substr($line,0,13)}++;
-                $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
+                $data->{$date}{'domain_responsibility'}{$1}++;
+                $data->{$date}{'mailbox_responsibility'}{$to[0]}++;
+                $data->{$date}{'bounce_responsibility'}{$user}++;
+                $data->{$date}{'hourly_bounce_volume'}{$user}{substr($line,0,13)}++;
+                $data->{$date}{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
                         if exists $data->{'user2owner'}{$user}
                                && $data->{'user2owner'}{$user} ne 'root';
-                $email->{'recipient_users'}{$user}++;
+                $email->{$date}{'recipient_users'}{$user}++;
                 $email->{'who'} = $user;
             }
             $email->{'type'} = 'bounce';
-            $data->{'total_bounce'}++;
-            push @{$data->{'mailids'}}, $email;
+            $data->{$date}{'total_bounce'}++;
+            if ($data->{'OPTS'}{'op'} eq 'preparse') {
+                print {$data->{'out'}{$email->{'date'}}} pack("(Z*)*", map { $_.":".$email->{$_} } keys %$email), "\n";
+            } else {
+                push @{$data->{'mailids'}}, $email;
+            }
         }
         elsif ($recv) {
             $line =~ /<= (\S+)/;
             my $from = $1;
             $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
+            $email->{'recipients'} = $1;
             my $to = $1;
             my @to = split / /, $to;
             my @to_domain = grep { defined $_ } map { /[\@+](.*)/ && $1 } @to;
@@ -2907,7 +2963,6 @@ sub parse_exim_mainlog {
                 # discard.
                 next;
             }
-            $email->{'recipients'} = \@to if @to;
             $email->{'sender'} = $from;
             my $from_domain;
             if ($from =~ /\S+?[\@+](\S+)/) {
@@ -2936,26 +2991,30 @@ sub parse_exim_mainlog {
             } elsif (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
                 for my $forwarder (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
                     next unless $forwarder =~ /[\@+]([^\@+]+)$/ && exists $data->{'domain2user'}{$1};
-                    $data->{'forwarder_responsibility'}{$data->{'domain2user'}{$1}}{$forwarder}++;
+                    $data->{$date}{'forwarder_responsibility'}{$data->{'domain2user'}{$1}}{$forwarder}++;
                 }
             } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
                 # actually just go ahead and skip all mail that's only to local addresses
                 next;
             } else {
                 $email->{'helo'} = $1 if $line =~ / H=(.*?)(?= [A-Z]=)/;
-                $data->{'total_outgoing'}++;
-                $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
-                $data->{'mailbox_responsibility'}{lc($from)}++;
+                $data->{$date}{'total_outgoing'}++;
+                $data->{$date}{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
+                $data->{$date}{'mailbox_responsibility'}{lc($from)}++;
                 for ($email->{'who'}) {
                     last if /@/;
-                    $data->{'hourly_volume'}{$_}{substr($line,0,13)}++;
-                    $data->{'responsibility'}{$_}++;
-                    $data->{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
+                    $data->{$date}{'hourly_volume'}{$_}{substr($line,0,13)}++;
+                    $data->{$date}{'responsibility'}{$_}++;
+                    $data->{$date}{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
                         if exists $data->{'user2owner'}{$_}
                         && $data->{'user2owner'}{$_} ne 'root'
                 }
             }
-            push @{$data->{'mailids'}}, $email
+            if ($data->{'OPTS'}{'op'} eq 'preparse') {
+                print {$data->{'out'}{$email->{'date'}}} pack("(Z*)*", map { $_.":".$email->{$_} } keys %$email), "\n";
+            } else {
+                push @{$data->{'mailids'}}, $email;
+            }
         }
     }
 }
@@ -3202,12 +3261,15 @@ use SpamReport::Cpanel;
 use SpamReport::Exim;
 use SpamReport::Exim::DB;
 use SpamReport::Maillog;
+use File::Which qw ( which );
+use Time::Local;
 
 use common::sense;
 use 5.008_008; use v5.8.8;
 
 use vars qw/$VERSION/;
 $VERSION = '2016022601';
+my $gzip = which("gzip");
 
 use Time::Local;
 use Time::localtime;
@@ -3270,11 +3332,11 @@ my %OPTS = (
 
     # operation modes
     'op'            => 'report',
-    # other values: 'cron', 'update'
+    # other values: 'cron', 'update', 'preparse'(experimental)
     
     # data modes
     'load'          => 'cron',
-    # other values: 'cache', undef
+    # other values: 'cache', undef, 'preparse'(experimental)
     'save'          => 1,
 );
 
@@ -3348,6 +3410,8 @@ sub check_options {
             'ls'          => sub { $OPTS{'report'} = 'cachels'; $OPTS{'load'} = 'no' },
             'cron'        => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
             'update'      => sub { $OPTS{'op'} = 'update' },
+            'preparse'    => sub { $OPTS{'op'} = 'preparse'; $OPTS{'load'} = undef; $OPTS{'with_queue'} = undef; $OPTS{'save'} = 0 }, # experimental
+            'preparsed'   => sub { $OPTS{'load'} = 'preparse'; $OPTS{'save'} = 0 },
             'latest'      => sub { $OPTS{'load'} = 'cache' },
 
             'help|?'      => sub { HelpMessage() },
@@ -3667,8 +3731,29 @@ sub parse_cpanel_logs {
     parse_logs(\&SpamReport::Cpanel::find_email_creation, glob '/usr/local/cpanel/logs/{access_log,archive/access_log-*.gz}');
 }
 
+sub filter_exim_logs {
+    local $data->{'OPTS'}{'exim_days'} = $data->{'OPTS'}{'exim_days'};
+    local $data->{'OPTS'}{'start_time'} = $data->{'OPTS'}{'start_time'};
+
+    my @days = reverse sort keys %{$data->{'OPTS'}{'exim_days'}};
+    my @exist = map { -f "/opt/hgmods/logs/$_.gz" } @days;
+    for (0..$#days-1) { # -1 to prevent success on the final day's check
+        next if grep { ! $exist[$_] } ($_..$#days);
+        # today and all previous days' logs exist?
+        # then assume previous days' logs are complete
+        splice(@days, $_+1);
+        %{$data->{'OPTS'}{'exim_days'}} = map { ($_, 1) } @days;
+        my ($year, $mon, $day) = split(/-/, $days[-1]);
+        $data->{'OPTS'}{'start_time'} = timelocal(0, 0, 0, $day, $mon-1, $year);
+        last
+    }
+    SpamReport::Data::open_preparse(@days);
+    parse_logs(\&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
+    SpamReport::Data::close_preparse();
+}
 sub parse_exim_logs {
     parse_logs(\&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
+    SpamReport::Data::merge_counters(keys %{$data->{'OPTS'}{'exim_days'}});
 }
 sub parse_dovecot_logs {
     parse_logs(\&SpamReport::Maillog::find_dovecot_logins, glob '/var/log/maillog{,{-*,.?}.gz}');
@@ -3806,6 +3891,15 @@ sub main {
                . "This run will take much longer than normal$NULL\n"
         }
     }
+    elsif ($OPTS{'load'} eq 'preparse') {
+        SpamReport::Data::loadpreparse(keys %{$OPTS{'exim_days'}});
+        if (keys %$data) {
+            $loadedcron = 1;
+            SpamReport::Data::merge_counters(keys %{$OPTS{'exim_days'}});
+        } else {
+            die "Unable to load preparsed data"
+        }
+    }
     DumpFile($OPTS{'dump'}.".cron", $data) if $loadedcron && $OPTS{'dump'};
 
     $data->{'OPTS'} = \%OPTS;
@@ -3835,6 +3929,17 @@ sub main {
         SpamReport::Data::save() if $OPTS{'save'};
         exit
     }
+    if ($OPTS{'op'} eq 'preparse') {
+        SpamReport::Output::head_info(\%OPTS);
+        setup_cpanel();
+        filter_exim_logs() if $OPTS{'want_eximlog'};
+        DumpFile($OPTS{'dump'}.".parse", $data) if $OPTS{'dump'};
+        if ($OPTS{'save'}) {
+            SpamReport::Data::merge_counters(keys %{$OPTS{'exim_days'}});
+            SpamReport::Data::save();
+        }
+        exit
+    }
 
     # op: report
 
@@ -3854,7 +3959,7 @@ sub main {
         $data->{'OPTS'} = \%OPTS;
         SpamReport::Output::head_info($data->{'OPTS'});
     } elsif ($OPTS{'load'} ne 'no') {
-        if (!$cacheloaded) {
+        if (!$cacheloaded && $OPTS{'load'} ne 'preparse') {
             "${RED}failed to load cache!  This run may take much longer than normal.$NULL\n";
         }
         SpamReport::Output::head_info($data->{'OPTS'});
@@ -3864,7 +3969,7 @@ sub main {
         $OPTS{'datelimit'} = 'only today' if $loadedcron;
         parse_exim_dbs() if $OPTS{'want_eximdb'};
         parse_exim_queue() if $OPTS{'want_queue'};
-        parse_exim_logs() if $OPTS{'want_eximlog'};
+        parse_exim_logs() if $OPTS{'want_eximlog'} && $OPTS{'load'} ne 'preparse';
         parse_dovecot_logs() if $OPTS{'want_maillog'};
         SpamReport::Data::save() if $OPTS{'save'} && !$cacheloaded
             && !(defined($OPTS{'user'}) or
