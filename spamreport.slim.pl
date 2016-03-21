@@ -124,7 +124,7 @@ sub _times {
 }
 
 my %cronkeys = map { ($_, 1) }
-    qw( dest_domains ip_addresses logins mail_ids recipient_domains scriptdirs senders scripts
+    qw( dest_domains ip_addresses logins mailids recipient_domains scriptdirs senders scripts
         responsibility domain_responsibility bounce_responsibility owner_responsibility
         bounce_owner_responsibility mailbox_responsibility forwarder_responsibility
         young_users young_mailboxes outip outscript hourly_volume hourly_bounce_volume
@@ -209,7 +209,7 @@ sub details {
     $detail{'type'} = (($file =~ /spamreportcron\.dat/) ? 'cron' : 'cache');
     $detail{'status'} = 'ok';
     $detail{'size'} = -s $file;
-    $detail{'emails'} = scalar(keys(%{$cache->{'mail_ids'}}));
+    $detail{'emails'} = scalar(@{$cache->{'mailids'}});
     $detail{'outgoing'} = $cache->{'total_outgoing'};
     $detail{'bounces'} = $cache->{'total_bounce'};
     $detail{'OPTS'} = $cache->{'OPTS'};
@@ -481,7 +481,7 @@ END {
         printf {$f} "%s + %d secs : %d tracked emails : %s\n", 
             scalar(localtime($start)),
             $end - $start, 
-            scalar(keys %{$data->{'mail_ids'}}),
+            scalar(@{$data->{'mailids'}}),
             $ARGS;
         close $f;
     }
@@ -756,8 +756,7 @@ sub country {
 sub sample_urls {
     my ($user) = @_;
     my %urls;
-    for (keys %{$data->{'mail_ids'}}) {
-        next unless exists $_->{'mail_ids'}{'in_queue'};
+    for (@{$data->{'mailids'}}) {
         open my $f, '-|', "exim -Mvb $_" or next;
         my $b = 0;
         for (<$f>) {
@@ -1007,7 +1006,7 @@ sub print_script_report {
 }
 
 sub analyze_helos {
-    for (values %{$data->{'mail_ids'}}) {
+    for (@{$data->{'mailids'}}) {
         next unless exists $_->{'helo'} && exists $_->{'who'} && $_->{'who'} !~ /\@/;
         next if defined($data->{'OPTS'}{'user'}) && $_->{'who'} ne $data->{'OPTS'}{'user'};
         $data->{'total_helos'}++;
@@ -1138,7 +1137,7 @@ sub print_responsibility_results {
 }
 
 sub analyze_auth_mismatch {
-    for (values %{$data->{'mail_ids'}}) {
+    for (@{$data->{'mailids'}}) {
         if (exists $_->{'ip'}) {
             $data->{'auth_mismatch'}{$_->{'sender'}}{'count'}++;
             $data->{'auth_mismatch'}{$_->{'sender'}}{'ip'}{$_->{'ip'}}++;
@@ -1220,7 +1219,7 @@ sub analyze_user_indicators {
     for (keys %{$data->{'bounce_responsibility'}}) {
         $users{$_} = undef if $bounces && $data->{'bounce_responsibility'}{$_} / $bounces > $cutoff;
     }
-    for (values %{$data->{'mail_ids'}}) {
+    for (@{$data->{'mailids'}}) {
         my $user = $_->{'who'};
         next unless exists $users{$user};
         next if $_->{'type'} eq 'bounce';
@@ -1495,7 +1494,7 @@ sub analyze_user_results {
 
     my %dirs; suppressed_scriptdirs(\%dirs);
 
-    for my $email (values %{$data->{'mail_ids'}}) {
+    for my $email (@{$data->{'mailids'}}) {
         if ($email->{'type'} eq 'bounce' && $tests->{'bounce_recipient'}($email, $user)) {
             $bounce++;
             $bounce{$email->{'recipients'}->[0]}++;
@@ -1784,7 +1783,7 @@ Emails found in queue:
 ----------------------
 User: @{[commify($u->{'queued'})]}, Total: @{[commify($data->{'total_queue'})]}
 
-This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(keys %{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.@{[scalar(keys(%{$data->{'crossauth'}{$user}})) ? "\n${MAGENTA}Some of this user's email may be getting authorized by an another user's credentials.$NULL" : '']}
+This user was responsible for @{[sprintf "%.2f%%", 100*($u->{'sent'}+$u->{'bounce'})/(scalar(@{$data->{'mail_ids'}}) || 'NaN')]} of the emails found.@{[scalar(keys(%{$data->{'crossauth'}{$user}})) ? "\n${MAGENTA}Some of this user's email may be getting authorized by an another user's credentials.$NULL" : '']}
 
 
 REPORT
@@ -2819,7 +2818,7 @@ sub parse_exim_mainlog {
         }
     }
     for my $line ( @lines ) {
-       next unless $line =~ m(
+        next unless $line =~ m(
             ^(\S{10}) \s (\d\d):(\d\d):(\d\d)  # $1 date  $2:$3:$4
                (?: \s \[\d+\])? \s             # VPS pid
             (?: (\w{6}-\w{6}-\w{2}) \s         # $5 mailid
@@ -2848,45 +2847,39 @@ sub parse_exim_mainlog {
             next;
         }
         if ( defined $exceed ) {
-            $data->{'discarded_users'}{$data->{'domain2user'}{$mailid}}++;
-            $data->{'mail_ids'}{$2}{'500_discarded'}++;
+            $data->{'discarded_users'}{$data->{'domain2user'}{$exceed}}++;
             $data->{'total_discarded'}++;
             next;
         }
-        $data->{'mail_ids'}{$mailid}{'date'} = $date;
-        $data->{'mail_ids'}{$mailid}{'time'} = $time;
-
-        my $subject;
-        $subject = $1 if $line =~ s/ T="(.*)"//;
+        my $email = { date => $date, $time => $time };
+        $email->{'subject'} = $1 if $line =~ s/ T="(.*)"//;
 
         if ($bounce) {
-            $line =~ s/T="(.*?)(?<!\\)" //;
-            my $subject = $1;  # only used on authorized 'bounces'
             next unless $line =~ /.*for (.*)$/;  # leading .* causes it to backtrack from the right
             my @to = split / /, $1;
             $line =~ / S=(\S+)/; for my $script ($1) {
                 if (defined $script && $script !~ /@/ && $script =~ /\D/) {
-                    $data->{'mail_ids'}{$mailid}{'script'} = $script;
+                    $email->{'script'} = $script;
                     $data->{'script'}{$script}++;
                 }
             }
-            $data->{'mail_ids'}{$mailid}{'recipients'} = \@to;
+            $email->{'recipients'} = \@to;
             if ($line =~ / A=dovecot_\S+:([^\@+\s]+(?:[\@+](\S+))?)/) {
                 # authenticated bounces!
-                $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
+                $email->{'auth_sender'} = $1;
                 my $user = $1;
                 if (defined $2) {
                     $user = $data->{'domain2user'}{$2};
-                    $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2;
+                    $email->{'auth_sender_domain'} = $2;
                     $data->{'domain_responsibility'}{$2}++;
                     $data->{'mailbox_responsibility'}{$1}++;
                 }
                 $data->{'bounce_responsibility'}{$user}++;
                 $data->{'hourly_volume'}{$user}{substr($line,0,13)}++;  # counting as outgoing
-                $data->{'mail_ids'}{$mailid}{'who'} = $user;
-                $data->{'mail_ids'}{$mailid}{'subject'} = $subject if defined $subject;
+                $email->{'who'} = $user;
             }
             elsif (@to == 1 && $to[0] =~ /[\@+](\S+)/ and exists $data->{'domain2user'}{$1}) {
+                delete $email->{'subject'};
                 my $user = $data->{'domain2user'}{$1};
                 $data->{'domain_responsibility'}{$1}++;
                 $data->{'mailbox_responsibility'}{$to[0]}++;
@@ -2895,14 +2888,14 @@ sub parse_exim_mainlog {
                 $data->{'bounce_owner_responsibility'}{$data->{'user2owner'}{$user}}++
                         if exists $data->{'user2owner'}{$user}
                                && $data->{'user2owner'}{$user} ne 'root';
-                $data->{'mail_ids'}{$mailid}{'recipient_users'}{$user}++;
-                $data->{'mail_ids'}{$mailid}{'who'} = $user;
+                $email->{'recipient_users'}{$user}++;
+                $email->{'who'} = $user;
             }
-            $data->{'mail_ids'}{$mailid}{'type'} = 'bounce';
+            $email->{'type'} = 'bounce';
             $data->{'total_bounce'}++;
+            push @{$data->{'mailids'}}, $email;
         }
         elsif ($recv) {
-            my $subject = $1;
             $line =~ /<= (\S+)/;
             my $from = $1;
             $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
@@ -2912,66 +2905,48 @@ sub parse_exim_mainlog {
             if ($to !~ tr/@//) {
                 # this is to a local users, only.  probably cronjob or like.
                 # discard.
-                delete $data->{'mail_ids'}{$mailid};
                 next;
             }
-            $data->{'mail_ids'}{$mailid}{'recipients'} = \@to if @to;
-            $data->{'mail_ids'}{$mailid}{'sender'} = $from;
+            $email->{'recipients'} = \@to if @to;
+            $email->{'sender'} = $from;
             my $from_domain;
             if ($from =~ /\S+?[\@+](\S+)/) {
                 $from_domain = $1;
-                $data->{'mail_ids'}{$mailid}{'sender_domain'} = $from_domain;
+                $email->{'sender_domain'} = $from_domain;
             }
-            $data->{'mail_ids'}{$mailid}{'subject'} = $subject;
             if ($line =~ / A=dovecot_\S+:([^\@+\s]+(?:[\@+](\S+))?)/) {
-                $data->{'mail_ids'}{$mailid}{'auth_sender'} = $1;
-                $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} = $2 if defined $2;
+                $email->{'auth_sender'} = $1;
+                $email->{'auth_sender_domain'} = $2 if defined $2;
             }
-            $data->{'mail_ids'}{$mailid}{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
-            $data->{'mail_ids'}{$mailid}{'ident'} = $1 if $line =~ / U=(\S+)/;
-            $data->{'mail_ids'}{$mailid}{'who'} = who($data->{'mail_ids'}{$mailid});
+            $email->{'received_protocol'} = $1 if $line =~ / P=(\S+)/;
+            $email->{'ident'} = $1 if $line =~ / U=(\S+)/;
+            $email->{'who'} = who($email);
 
             # this first test is a little unusual
-            # 1. it prevents the following tests from deleting the email
-            # 2. it assigns an IP, which is also the unique trigger for auth_mismatch
-            # 3. it prevents the responsibility tracking in the final 'else'
+            # 1. it assigns an IP, which is also the unique trigger for auth_mismatch
+            # 2. it prevents the responsibility tracking in the final 'else'
             #
-            if (exists $data->{'mail_ids'}{$mailid}{'sender_domain'} &&
-                exists $data->{'mail_ids'}{$mailid}{'auth_sender_domain'} &&
-                lc($data->{'mail_ids'}{$mailid}{'sender_domain'}) ne
-                lc($data->{'mail_ids'}{$mailid}{'auth_sender_domain'}) && 
+            if (exists $email->{'sender_domain'} &&
+                exists $email->{'auth_sender_domain'} &&
+                lc($email->{'sender_domain'}) ne
+                lc($email->{'auth_sender_domain'}) && 
                 $line =~ / A=dovecot/ &&
                 $line =~ /\[([^\s\]]+)\]:\d+ I=/) {
-                $data->{'mail_ids'}{$mailid}{'ip'} = $1;
-            #}
-            #elsif (!exists($data->{'mail_ids'}{$mailid}{'auth_sender'})  # not locally authed
-            #    && !exists($data->{'mail_ids'}{$mailid}{'ident'})     # not ID'd as a local user
-            #    && !exists($data->{'domain2user'}{lc($from)})  # sender domain is remote
-            #    && !grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain) ) {  # recipient domains are local
-            #    # then this is an incoming email and we don't care about it
-            #    delete $data->{'mail_ids'}{$mailid};
-            #} elsif (@{$data->{'mail_ids'}{$mailid}{'recipients'}} ==
-            #       grep { $_ =~ /\@\Q$data->{'mail_ids'}{$mailid}{'sender_domain'}\E$/i }
-            #       @{$data->{'mail_ids'}{$mailid}{'recipients'}}) {
-            #    # if the number of recipients is the same as the number of
-            #    # recipients that are to the sender domain, which is local,
-            #    # then we don't care.  people can spam themselves all they
-            #    # want.
-            #    delete $data->{'mail_ids'}{$mailid};
+                $email->{'ip'} = $1;
             } elsif (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
                 for my $forwarder (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
                     next unless $forwarder =~ /[\@+]([^\@+]+)$/ && exists $data->{'domain2user'}{$1};
                     $data->{'forwarder_responsibility'}{$data->{'domain2user'}{$1}}{$forwarder}++;
                 }
             } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
-                # actually just go ahead and drop all mail that's only to local addresses
-                delete $data->{'mail_ids'}{$mailid};
+                # actually just go ahead and skip all mail that's only to local addresses
+                next;
             } else {
-                $data->{'mail_ids'}{$mailid}{'helo'} = $1 if $line =~ / H=(.*?)(?= [A-Z]=)/;
+                $email->{'helo'} = $1 if $line =~ / H=(.*?)(?= [A-Z]=)/;
                 $data->{'total_outgoing'}++;
                 $data->{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
                 $data->{'mailbox_responsibility'}{lc($from)}++;
-                for ($data->{'mail_ids'}{$mailid}{'who'}) {
+                for ($email->{'who'}) {
                     last if /@/;
                     $data->{'hourly_volume'}{$_}{substr($line,0,13)}++;
                     $data->{'responsibility'}{$_}++;
@@ -2980,6 +2955,7 @@ sub parse_exim_mainlog {
                         && $data->{'user2owner'}{$_} ne 'root'
                 }
             }
+            push @{$data->{'mailids'}}, $email
         }
     }
 }
@@ -3026,7 +3002,7 @@ sub analyze_num_recipients {
     my %emails;
 
     # add suspect: anything with more than one recipient
-    for my $email (values %{$data->{'mail_ids'}}) {
+    for my $email (@{$data->{'mailids'}}) {
         next unless $email->{'num_recipients'} > 1;
         $suspects{$email->{'who'}}{$_} = 1 for @{$email->{'recipients'}};
         $emails{$email->{'who'}}++;
@@ -3564,6 +3540,7 @@ sub parse_wait {
     my ($time_stamp, $count, $sequence) = unpack ('l x4 i i', $value);
     my @mail_ids = unpack ("x[l] x4 x[i] x[i] (A16)$count", $value);
 
+    # XXX: disabled; 'mail_ids' hash has been replaced by 'mailids' array
     if ($host =~ $hidesti) {
         $data->{'mail_ids'}{$_}{'send_delays'}++ for (@mail_ids);
         $data->{'dest_domains'}{$1}{'delays'}++ for (@mail_ids);
@@ -3630,7 +3607,7 @@ sub parse_exim_dbs {
     my %db_parsers = (
         'retry'            => \&parse_retries,
         'ratelimit'        => \&parse_ratelimit,
-        'wait-remote_smtp' => \&parse_wait,
+#        'wait-remote_smtp' => \&parse_wait,
     );
 
     for my $db_name ( keys %db_parsers ) {
@@ -3744,18 +3721,22 @@ sub user {
 
 sub purge {
     my %users = map { ($_, 1) } @_;
-    for (keys %{$data->{'mail_ids'}}) {
-        if (exists $users{$data->{'mail_ids'}{$_}{'who'}}) {
-            if ($data->{'mail_ids'}{$_}{'type'} eq 'bounce') {
+    my @keep;
+    for (@{$data->{'mailids'}}) {
+        if (exists $users{$_->{'who'}}) {
+            if ($_->{'type'} eq 'bounce') {
                 $data->{'total_bounce'}--;
                 $data->{'filtered_bounce'}++;
             } else {
                 $data->{'total_outgoing'}--;
                 $data->{'filtered_outgoing'}++;
             }
-            delete $data->{'mail_ids'}{$_};
+        }
+        else {
+            push @keep, $_
         }
     }
+    $data->{'mailids'} = \@keep;
     for (keys %users) {
         delete $data->{'responsibility'}{$_};
         delete $data->{'owner_responsibility'}{$_};
@@ -3772,22 +3753,24 @@ sub purge {
 
 sub narrow {
     my ($around) = @_;
-    for (keys %{$data->{'mail_ids'}}) {
-        unless (exists $around->{$data->{'mail_ids'}{$_}{'date'}}
-            && abs($around->{$data->{'mail_ids'}{$_}{'date'}}
-                    - $data->{'mail_ids'}{$_}{'time'}) < 3600) {
-            my $user = $data->{'mail_ids'}{$_}{'who'};
+    my @keep;
+    for (@{$data->{'mailids'}}) {
+        unless (exists $around->{$_->{'date'}}
+            && abs($around->{$_->{'date'}}
+                    - $_->{'time'}) < 3600) {
+            my $user = $_->{'who'};
             my $owner = $data->{'user2owner'}{$user};
             $data->{'responsibility'}{$user}-- if $data->{'responsibility'}{$user};
             $data->{'owner_responsibility'}{$owner}-- if $data->{'owner_responsibility'}{$owner};
-            if ($data->{'mail_ids'}{$_}{'type'} eq 'bounce') {
+            if ($_->{'type'} eq 'bounce') {
                 $data->{'total_bounce'}--;
                 $data->{'filtered_bounce'}++;
             } else {
                 $data->{'total_outgoing'}--;
                 $data->{'filtered_outgoing'}++;
             }
-            delete $data->{'mail_ids'}{$_};
+        } else {
+            push @keep, $_
         }
     }
 }
