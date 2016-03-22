@@ -779,12 +779,6 @@ sub user {
             $user = sprintf("$YELLOW%s $YELLOW(recent: %.1f%% = @{[SpamReport::Output::commify($todays_mails)]})$NULL", $user, $recency*100)
         }
     }
-    #if (exists $data->{'special_indicators'}{$u}{'hi_malware'}) {
-    #    my @urls = sample_urls($u);
-    #    if (@urls) {
-    #        $user .= join '', map { "\n\t$_"} @urls
-    #    }
-    #}
     $user
 }
 
@@ -802,21 +796,6 @@ sub country {
     else {
         "$CYAN$code$NULL"
     }
-}
-
-sub sample_urls {
-    my ($user) = @_;
-    my %urls;
-    for (@{$data->{'mailids'}}) {
-        open my $f, '-|', "exim -Mvb $_" or next;
-        my $b = 0;
-        for (<$f>) {
-            $urls{$1}++ if m,(http://[\x21-\x7f]+),;
-            $b += length($_); last if $b > 1024;
-        }
-        close $f;
-    }
-    (grep { defined $_ } List::Util::shuffle(keys %urls))[0..3];
 }
 
 1;
@@ -1284,9 +1263,6 @@ sub analyze_user_indicators {
         if ($_->{'sender'} =~ /[^\@_]+_/) {
             $users{$user}{'underbar_mail'}++;
         }
-        #if ($_->{'subject'} =~ /^(?:hello|hi)!?$/i or $_->{'subject'} eq '') {
-        #    $data->{'special_indicators'}{$user}{'hi_malware'}++;
-        #}
         if ($_->{'sender_domain'} =~ $hisource or
             $_->{'sender_domain'} =~ $spamtld) {
             $users{$user}{'badsender'}++;
