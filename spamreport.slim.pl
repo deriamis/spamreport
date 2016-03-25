@@ -3712,7 +3712,7 @@ sub check_options {
             'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
             'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
             'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
-            'around|a=s'  => \$OPTS{'around'},
+            'around|a=s'  => \$OPTS{'around'}, # experimental
 #            'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
             'reseller|r'  => \$OPTS{'reseller'},
             'help|?'      => sub { ec_usage() },
@@ -4488,7 +4488,6 @@ options:
     -s <time>   | --start=<time>
     -e <time>   | --end=<time>
     -h <hours>  | --hours=<hours>
-    -a <time>   | --around=<time>       : look within an hour of a time
         (default: 72 hours)
 
     -u <user>   | --user=<user>         : report on a user
