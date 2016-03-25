@@ -9,7 +9,7 @@ ABOUT
 
 BUILDING (for the first time ever)
 
-    make          # this will work for a bit and then fail
+    make          # this may work for a bit and then fail
     make depend
     make
 
@@ -51,35 +51,51 @@ ALTERNATE USAGE
     spamreport tries to behave in a eigshell-appropriate way if $RUSER is
     unset.  (Presently this only means that some messages are suppressed.)
 
-    spamreport duplicates ecpp's flags and behavior if $0 is 'ec'
+    spamreport duplicates ecpp's flags, behavior, and usage if $0 is 'ec'
 
 CACHE
 
-    spamreport expects that, once a calendar day, the following command will be run:
+    spamreport preparses exim_mainlog and stores meaningful records in a very
+    easily re-parsed form (unpack is all that's required) in compressed files
+    that are named after the day of the corresponding logs.  So, 2016-03-25
+    logs will all wind up in 2016-03-25.gz , with metadata in 2016-03-25.stor
+    files.  Presently, preparsed logs that are definitely complete are reused
+    and partial or missing preparsed logs are regenerated on demand.  Presently,
+    cache is *only* updated when the required logs are missing or when spamreport
+    is invoked with
 
         spamreport --cron
 
-    and that at regular intervals over the course of a day, that the following
-    command is also run:
+    The expectation is that this command will be in a cronjob that will run
+    once an hour, and that normal report runs, by users, will never actually
+    need to parse the exim log themselves.
 
-        spamreport --update
+    The preparsing is very parsimonious with memory, using never more than 30MB
+    or so of RSS even when working with 4GB log files.  Report runs can retain a
+    bit of analytical data but should still top out at only a few hundred
+    megabytes for reports involving several millions of emails.
 
-    These commands maintain A) a partial cache with just prior days' email
-    information, and B) a complete cache of all email information at the time of
-    invocation.
+    Preparsing and reporting are also reasonably quick.  The first ever run on
+    a reseller with 4GB logs may take 7 minutes or so, but every subsequent run can
+    take advantage of the previous days' cache and may only run in 30 seconds, down
+    from 7 minutes.  An experimental feature, which is already functional but
+    just needs some tire-kicking, allows spamreport to seek() to where the last run
+    finished, at an enormous time savings for --cron runs after the very first.
 
-    Most other investigative and reporting commands load just the prior days'
-    cache and then actively scan system log files and queues for current
-    information about the current calendar day.  With --latest , and in some
-    other cases, the complete cache is loaded and log-scanning is skipped as
-    much as possible.
+FILES
 
-    If these cache files don't exist or are too old, spamreport will try to
-    make do.
+    spamperformance.log - keeps one-line log entries of how performant
+        spamreport runs are.  spamreport removes old entries from this file to ensure
+        that it doesn't grow too large.
+    
+    YYYY-MM-DD.gz - a gzipped preparsed log of exim data from the given date.
+        The format is line-based, with each line containing NUL-separated fields,
+        without explicit keys.  The first field is the Class::Struct package name that
+        the record should be unpacked into when loaded.  These are packages like
+        SpamReport::Email , SpamReport::Email::Bounce , etc.
 
-    Normal commands also update the complete cache, just like --update, when
-    this is sensible and when they have the information anyway.
-
-    The cache files are gzip-compressed Storable files.  Use --dump if you want
-    readable YAML files as well.
-
+    YYYY-MD-DD.stor - a Storable file containing metadata from the given date.
+        These are mostly counters, many of them not reproducible from the
+        associated preparsed logs.  preparse merges all of these counters
+        together to know, for example, the total number of outgoing emails for a time
+        period.
