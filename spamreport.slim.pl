@@ -219,7 +219,12 @@ $loadcronfail = '';
 sub try_advance {
     my ($log, $logfile, $inode) = @_;
     my $date = $data->{'try_advance'};
-    $data->{$date} = lock_retrieve("/opt/hgmods/logs/$date.stor");
+    eval { $data->{$date} = lock_retrieve("/opt/hgmods/logs/$date.stor") };
+    if ($@) {
+        warn $@;
+        return open_preparse($date)
+    }
+    return open_preparse($date) if $@;
     return open_preparse($date) unless
         $logfile eq $data->{$date}{'last_line'}{'logfile'} &&
         $inode == $data->{$date}{'last_line'}{'inode'};
@@ -292,7 +297,8 @@ sub load_preparse {
     for (@_) {
         open my $f, '-|', $gzip, '-dc', "/opt/hgmods/logs/$_.gz"
             or next;
-        $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor");
+        eval { $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor") };
+        warn $@ if $@;
         while (defined($_ = <$f>)) {
             chomp;
             $data->{'total_email'}++;
@@ -313,7 +319,8 @@ sub stream_preparse {
     for (@_) {
         open $data->{'in'}{$_}, '-|', $gzip, '-dc', "/opt/hgmods/logs/$_.gz"
             or die "Unable to open /opt/hgmods/logs/$_.gz : $!";
-        $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor");
+        eval { $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor") };
+        warn $@ if $@;
         print "Streaming preparse log /opt/hgmods/logs/$_.gz\n";
     }
     $data->{'in_streams'} = [@_];
