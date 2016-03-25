@@ -216,6 +216,42 @@ $data = {};
 $MAX_RETAINED = 4;
 $loadcronfail = '';
 
+sub try_advance {
+    my ($log, $logfile, $inode) = @_;
+    my $date = $data->{'try_advance'};
+    $data->{$date} = lock_retrieve("/opt/hgmods/logs/$date.stor");
+    return open_preparse($date) unless
+        $logfile eq $data->{$date}{'last_line'}{'logfile'} &&
+        $inode == $data->{$date}{'last_line'}{'inode'};
+    File::Nonblock::seek($log, $data->{$date}{'last_line'}{'tell'});
+    my $tmp = File::Temp::mktemp("/opt/hgmods/logs/$date.XXXXXX");
+    system cp => "/opt/hgmods/logs/$date.gz", $tmp
+        and die "Failed to copy /opt/hgmods/logs/$date.gz to $tmp";
+    open $data->{'out'}{$date}, '|-', "$gzip >> $tmp"
+        or die "Couldn't fork $gzip for /opt/hgmods/logs/$date.gz : $!";
+    $data->{'outmap'}{$tmp} = "/opt/hgmods/logs/$date.gz";
+
+    if (defined $ENV{'DEBUG_SEEK'}) {
+        open my $f, '>>', "/root/spamreport/.seeklog";
+        print {$f} "Advanced to ", $data->{$date}{'last_line'}{'tell'}, ": ",
+            $data->{$date}{'last_line'}{'line'}, "\n";
+        close $f;
+        $data->{'advanced'} = 1;
+    }
+}
+
+sub last_line {
+    my ($logfile, $inode, $line, $tell) = @_;
+    if ($line =~ /^(\d+-\d\d-\d\d) / && exists $data->{$1}) {
+        $data->{$1}{'last_line'} = {
+            logfile => $logfile,
+            inode => $inode,
+            line => $line,
+            tell => $tell
+        };
+    }
+}
+
 sub retrieve {
     my ($path, $lock) = @_;
     if ($path =~ /\.gz(?:$|\.)/) {
@@ -268,7 +304,7 @@ sub load_preparse {
 
 sub all_preparsed_exist {
     for (@_) {
-        return 0 unless -s "/opt/hgmods/logs/$_.gz"
+        return 0 unless -s "/opt/hgmods/logs/$_.gz" > 20
     }
     return 1
 }
@@ -2365,6 +2401,13 @@ sub update_size {
     1;
 }
 
+sub seek {
+    my ($file, $pos) = @_;
+    my $fd = $open_files->{name($file)}{'handle'};
+    openhandle($fd) || return;
+    seek($fd, $pos, 0);
+}
+
 sub tell {
     my ($file) = @_;
     return undef if not $file;
@@ -3152,6 +3195,7 @@ sub parse_exim_mainlog {
             return
         }
     }
+
     for my $line ( @lines ) {
         next unless $line =~ m(
             ^(\S{10}) \s (\d\d):(\d\d):(\d\d)  # $1 date  $2:$3:$4
@@ -3313,6 +3357,7 @@ sub parse_exim_mainlog {
             print {$data->{'out'}{$email->date}} $email->serialize(), "\n";
         }
     }
+    $lines[$#lines]
 }
 
 sub analyze_queued_mail_data {
@@ -3616,6 +3661,9 @@ my %OPTS = (
     'report'        => 'summary',
     # other values: user, script, md5, logins, forwarders, helos, cachelist
 
+    # feature categories
+    'use_seek'      => 0,
+
     # summary categories
     'with_queue'    => 1,
     'with_scripts'  => 1,
@@ -3632,11 +3680,11 @@ my %OPTS = (
 
     # operation modes
     'op'            => 'report',
-    # other values: 'cron', 'update', 'preparse'(experimental)
+    # other values: 'cron', 'update', 'preparse'
     
     # data modes
     'load'          => 'preparse',
-    # other values: 'cache', undef, 'preparse'(experimental)
+    # other values: 'cache', undef, 'cron'
     'save'          => 0,
 );
 
@@ -3664,7 +3712,7 @@ sub check_options {
             'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
             'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
             'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
-            'around|a=s'  => \$OPTS{'around'},  # undocumented, experimental
+            'around|a=s'  => \$OPTS{'around'},
 #            'created|c=s' => sub { $OPTS{'report'} = 'acctls'; $OPTS{'email'} = $_[1]; },
             'reseller|r'  => \$OPTS{'reseller'},
             'help|?'      => sub { ec_usage() },
@@ -3712,6 +3760,7 @@ sub check_options {
             'cron'        => sub { $OPTS{'op'} = 'preparse'; $OPTS{'load'} = undef; $OPTS{'with_queue'} = undef; $OPTS{'save'} = 0; $OPTS{'latest'} = undef },
             'refresh'     => sub { $OPTS{'latest'} = undef },
             'oldlatest'   => sub { $OPTS{'load'} = 'cache' },
+            'seek'        => \$OPTS{'use_seek'},  # experimental
 
             'help|?'      => sub { HelpMessage() },
             'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
@@ -3962,7 +4011,9 @@ sub parse_logs {
         @logs = grep { -M $_ < 1 } @logs
     }
 
-    for my $logfile (sort { -M $b <=> -M $a } @logs) {
+    my ($last_line, $last_tell, $logfile);
+    for (sort { -M $b <=> -M $a } @logs) {
+        $logfile = $_;
         my $end_reached;
         my $mtime = (stat($logfile))[9];
         next if ( $mtime < $OPTS{'start_time'} );
@@ -3973,15 +4024,27 @@ sub parse_logs {
 
         my $log = File::Nonblock::open($logfile, 8*1024) or die "Could not open $logfile";
 
+        if ($data->{'try_advance'}) {
+            SpamReport::Data::try_advance($log, $logfile, (stat($logfile))[1]);
+        }
+
         while (not File::Nonblock::eof($log)) {
             ($year, $lines) = get_next_lines($log, $year, $allow_year_dec) or $end_reached = 1;
             last if $end_reached;
 
-            if ( File::Nonblock::tell($log) != 0 ) {
+            $last_tell = File::Nonblock::tell($log);
+            if ( $last_tell != 0 ) {
                 show_progress($log, 'Reading')
             }
 
-            $handler->($lines, $year, $OPTS{'end_time'}, $in_zone);
+            if (defined($ENV{'DEBUG_SEEK'}) && $data->{'advanced'}) {
+                $data->{'advanced'} = 0;
+                open my $f, '>>', "/root/spamreport/.seeklog";
+                print {$f} "Next line: ", $lines->[0], "\n\n";
+                close $f;
+            }
+
+            $last_line = $handler->($lines, $year, $OPTS{'end_time'}, $in_zone);
 
             $allow_year_dec = 0;
         }
@@ -3991,6 +4054,9 @@ sub parse_logs {
 
         last if $end_reached;
     }
+
+    SpamReport::Data::last_line($logfile, (stat($logfile))[1], $last_line, $last_tell)
+        if defined $last_line && $logfile !~ /\.gz$/;
 
     1;
 }
@@ -4006,19 +4072,27 @@ sub filter_exim_logs {
     local $data->{'OPTS'}{'start_time'} = $data->{'OPTS'}{'start_time'};
 
     my @days = reverse sort keys %{$data->{'OPTS'}{'exim_days'}};
-    my @exist = map { -s "/opt/hgmods/logs/$_.gz" } @days;
+    my @exist = map { -s "/opt/hgmods/logs/$_.gz" > 20 } @days;
+    my $today;
     for (0..$#days-1) { # -1 to prevent success on the final day's check
         next if grep { ! $exist[$_] } ($_..$#days);
         # today and all previous days' logs exist (and aren't zero-length)?
         # then assume previous days' logs are complete
         print "Found complete logs for (", join(' ', @days[$_+1..$#days]), ")\n";
+        if ($_ == 0) { $today = $days[0] }
         splice(@days, $_+1);
         %{$data->{'OPTS'}{'exim_days'}} = map { ($_, 1) } @days;
         my ($year, $mon, $day) = split(/-/, $days[-1]);
         $data->{'OPTS'}{'start_time'} = timelocal(0, 0, 0, $day, $mon-1, $year);
         last
     }
-    SpamReport::Data::open_preparse(@days);
+    if ($today && -s "/opt/hgmods/logs/$today.gz" > 20
+            && $data->{'OPTS'}{'use_seek'}
+            && -f "/opt/hgmods/logs/$today.stor") {
+        $data->{'try_advance'} = $today
+    } else {
+        SpamReport::Data::open_preparse(@days)
+    }
     parse_logs(\&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
     SpamReport::Data::close_preparse();
 }
