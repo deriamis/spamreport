@@ -1246,6 +1246,14 @@ sub print_results {
     1;
 }
 
+sub ip_at {
+    analyze_results();
+    SpamReport::Maillog::analyze_logins();
+    print_results();
+    for (keys %{$data->{'logins'}}) { $data->{'logins'}{$_}{'suspect'}++ }
+    SpamReport::Output::print_login_results();
+}
+
 sub cache_ls {
     my @details;
     push @details, SpamReport::Data::details($_)
@@ -3183,6 +3191,34 @@ sub parse_queued_mail_data {
     }
 }
 
+sub ip_at {
+    my $lines = shift;
+    my $at = $data->{'OPTS'}{'exim_at'};
+    my $ip = $data->{'OPTS'}{'exim_ip'};
+    for (@$lines) {
+        next unless $_ =~ $at && $_ =~ $ip && $_ =~ m(
+            ^(\S{10}) \s (\d\d):(\d\d):(\d\d)  # $1 date  $2:$3:$4
+               (?: \s \[\d+\])? \s             # VPS pid
+             (\w{6}-\w{6}-\w{2}) \s            # $5 mailid
+                (?: <= \s (?! <>)
+                  | SMTP \s connection \s outbound \s
+                    \d+ \s \5 \s \S+ \s \S+ \s
+                    I=\S+ \s S=\S+ \s F=(\S+)$)       # $6
+        )x;
+        my ($date, $time, $mailid, $script_file) =
+            ($1, $2*3600 + $3*60 + $4, $5, $6);
+        if (defined $script_file) {
+            $data->{'outscript'}{$script_file}++;
+        }
+        else {
+            my $subject = $1 if s/ T="(.*)"//;
+            for (parse_recv_email($date, $time, $subject, $_)) {
+                push @{$data->{'queue'}}, $_
+            }
+        }
+    }
+}
+
 my $eximinfoscript = qr/$RE{'exim'}{'info'}{'script'}/;
 sub parse_exim_mainlog {
     my ($lines, $year, $end_time, $in_zone) = @_;
@@ -3239,14 +3275,14 @@ sub parse_exim_mainlog {
             $data->{$date}{'total_discarded'}++;
             next;
         }
-        my $email;
-        my $subject = $1 if $line =~ s/ T="(.*)"//;
 
+        my $subject = $1 if $line =~ s/ T="(.*)"//;
         if ($bounce) {
             next unless $line =~ /.*for (.*)$/;  # leading .* causes it to backtrack from the right
             my $recipients = $1;
             my $email_script;
             my @to = split / /, $1;
+            my $email;
             $line =~ / S=(\S+)/; for my $script ($1) {
                 if (defined $script && $script !~ /@/ && $script =~ /\D/) {
                     $email_script = $script;
@@ -3298,75 +3334,82 @@ sub parse_exim_mainlog {
             print {$data->{'out'}{$email->date}} $email->serialize(), "\n";
         }
         elsif ($recv) {
-            $email = SpamReport::Email->new(
-                date => $date,
-                time => $time,
-                subject => $subject,
-            );
-            $line =~ /<= (\S+)/;
-            my $from = $1;
-            $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
-            $email->recipients($1);
-            my $to = $1;
-            my @to = split / /, $to;
-            my @to_domain = grep { defined $_ } map { /[\@+](.*)/ && $1 } @to;
-            if ($to !~ tr/@//) {
-                # this is to a local users, only.  probably cronjob or like.
-                # discard.
-                next;
+            for (parse_recv_email($date, $time, $subject, $line)) {
+                print {$data->{'out'}{$_->date}} $_->serialize(), "\n";
             }
-            $email->sender($from);
-            my $from_domain;
-            if ($from =~ /\S+?[\@+](\S+)/) {
-                $from_domain = $1;
-                $email->sender_domain($from_domain);
-            }
-            if ($line =~ / (A=dovecot_\S+):([^\@+\s]+(?:[\@+](\S+))?)/) {
-                $email->host_auth($1);
-                $email->auth_sender($2);
-                $email->auth_sender_domain($3) if defined $3;
-            }
-            $email->received_protocol($1) if $line =~ / P=(\S+)/;
-            $email->ident($1) if $line =~ / U=(\S+)/;
-            $email->who(who($email));
-
-            # this first test is a little unusual
-            # 1. it assigns an IP, which is also the unique trigger for auth_mismatch
-            # 2. it prevents the responsibility tracking in the final 'else'
-            #
-            if (defined $email->sender_domain &&
-                defined $email->auth_sender_domain &&
-                lc($email->sender_domain) ne
-                lc($email->auth_sender_domain) && 
-                $line =~ / A=dovecot/ &&
-                $line =~ /\[([^\s\]]+)\]:\d+ I=/) {
-                $email->ip($1);
-            } elsif (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
-                for my $forwarder (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
-                    next unless $forwarder =~ /[\@+]([^\@+]+)$/ && exists $data->{'domain2user'}{$1};
-                    $data->{$date}{'forwarder_responsibility'}{$data->{'domain2user'}{$1}}{$forwarder}++;
-                }
-            } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
-                # actually just go ahead and skip all mail that's only to local addresses
-                next;
-            } else {
-                $email->helo($1) if $line =~ / H=(.*?)(?= [A-Z]=)/;
-                $data->{$date}{'total_outgoing'}++;
-                $data->{$date}{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
-                $data->{$date}{'mailbox_responsibility'}{lc($from)}++;
-                for ($email->who) {
-                    last if /@/;
-                    $data->{$date}{'hourly_volume'}{$_}{substr($line,0,13)}++;
-                    $data->{$date}{'responsibility'}{$_}++;
-                    $data->{$date}{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
-                        if exists $data->{'user2owner'}{$_}
-                        && $data->{'user2owner'}{$_} ne 'root'
-                }
-            }
-            print {$data->{'out'}{$email->date}} $email->serialize(), "\n";
         }
     }
     $lines[$#lines]
+}
+
+sub parse_recv_email {
+    my ($date, $time, $subject, $line) = @_;
+    my $email = SpamReport::Email->new(
+        date => $date,
+        time => $time,
+        subject => $subject,
+    );
+    $line =~ /<= (\S+)/;
+    my $from = $1;
+    $line =~ /.*for (.*)$/;  # .* causes it to backtrack from the right
+    $email->recipients($1);
+    my $to = $1;
+    my @to = split / /, $to;
+    my @to_domain = grep { defined $_ } map { /[\@+](.*)/ && $1 } @to;
+    if ($to !~ tr/@//) {
+        # this is to a local users, only.  probably cronjob or like.
+        # discard.
+        return ();
+    }
+    $email->sender($from);
+    my $from_domain;
+    if ($from =~ /\S+?[\@+](\S+)/) {
+        $from_domain = $1;
+        $email->sender_domain($from_domain);
+    }
+    if ($line =~ / (A=dovecot_\S+):([^\@+\s]+(?:[\@+](\S+))?)/) {
+        $email->host_auth($1);
+        $email->auth_sender($2);
+        $email->auth_sender_domain($3) if defined $3;
+    }
+    $email->received_protocol($1) if $line =~ / P=(\S+)/;
+    $email->ident($1) if $line =~ / U=(\S+)/;
+    $email->who(who($email));
+
+    # this first test is a little unusual
+    # 1. it assigns an IP, which is also the unique trigger for auth_mismatch
+    # 2. it prevents the responsibility tracking in the final 'else'
+    #
+    if (defined $email->sender_domain &&
+        defined $email->auth_sender_domain &&
+        lc($email->sender_domain) ne
+        lc($email->auth_sender_domain) &&
+        $line =~ / A=dovecot/ &&
+        $line =~ /\[([^\s\]]+)\]:\d+ I=/) {
+        $email->ip($1);
+    } elsif (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
+        for my $forwarder (grep { exists($data->{'offserver_forwarders'}{$_}) } @to) {
+            return () unless $forwarder =~ /[\@+]([^\@+]+)$/ && exists $data->{'domain2user'}{$1};
+            $data->{$date}{'forwarder_responsibility'}{$data->{'domain2user'}{$1}}{$forwarder}++;
+        }
+    } elsif (!grep({ !exists($data->{'domain2user'}{lc($_)}) } @to_domain)) {
+        # actually just go ahead and skip all mail that's only to local addresses
+        return ();
+    } else {
+        $email->helo($1) if $line =~ / H=(.*?)(?= [A-Z]=)/;
+        $data->{$date}{'total_outgoing'}++;
+        $data->{$date}{'domain_responsibility'}{lc($from_domain)}++ if defined $from_domain;
+        $data->{$date}{'mailbox_responsibility'}{lc($from)}++;
+        for ($email->who) {
+            last if /@/;
+            $data->{$date}{'hourly_volume'}{$_}{substr($line,0,13)}++;
+            $data->{$date}{'responsibility'}{$_}++;
+            $data->{$date}{'owner_responsibility'}{$data->{'user2owner'}{$_}}++
+                if exists $data->{'user2owner'}{$_}
+                && $data->{'user2owner'}{$_} ne 'root'
+        }
+    }
+    return $email
 }
 
 sub analyze_queued_mail_data {
@@ -3571,6 +3614,18 @@ sub find_dovecot_logins {
     }
 }
 
+sub ip_at {
+    my $lines = shift;
+    my $at = $data->{'OPTS'}{'dove_at'};
+    my $ip = $data->{'OPTS'}{'dove_ip'};
+    for (@$lines) {
+        next unless $_ =~ $at && $_ =~ $ip;
+        next unless /Login: user=<(?!__cpanel)(\S+?)>/;
+        $data->{'logins'}{$1}{'logins_from'}{$data->{'OPTS'}{'ip'}}++;
+        $data->{'logins'}{$1}{'total_logins'}++;
+    }
+}
+
 # implemented: SUSP.LOG1 account suspect if login IPs have >2 unique leading 3 octets
 # indicate on >10
 sub analyze_logins {
@@ -3770,11 +3825,47 @@ sub check_options {
             'refresh'     => sub { $OPTS{'latest'} = undef },
             'oldlatest'   => sub { $OPTS{'load'} = 'cache' },
 
+            'ip=s'        => sub { $OPTS{'op'} = 'ipat'; $OPTS{'ip'} = $_[1] },
+            'at=s'        => sub { $OPTS{'op'} = 'ipat'; $OPTS{'at'} = $_[1] },
+
             'help|?'      => sub { HelpMessage() },
             'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
             'version'     => sub { VersionMessage(module_versions()) },
         );
     }
+    if ($OPTS{'op'} eq 'ipat') {
+        unless (defined($OPTS{'ip'})) {
+            warn "--at provided without matching --ip\n";
+            pod2usage(3)
+        }
+        unless (defined($OPTS{'at'})) {
+            warn "--ip provided without matching --at\n";
+            pod2usage(3)
+        }
+        unless ($OPTS{'ip'} =~ /^\d+\. \d+\. \d+\. \d+$/x) {
+            # mainly intended to avoid regex shenanagans
+            warn "$OPTS{'ip'} doesn't look like an ip\n";
+            pod2usage(3)
+        }
+        my $at = str2time($OPTS{'at'}) or do {
+            warn "$OPTS{'at'} doesn't look like a time\n";
+            pod2usage(3);
+        };
+        $OPTS{'start_time'} = timelocal(0, 0, (CORE::localtime($at))[2..8]);
+        $OPTS{'end_time'}   = timelocal(0, 0, (CORE::localtime($at+3600))[2..8]);
+        $OPTS{'load'} = undef;
+        $OPTS{'want_maillog'} = 1;
+        $OPTS{'want_eximlog'} = 1;
+        $OPTS{'want_queue'} = 0;
+
+        $OPTS{'exim_ip'} = qr/\Q$OPTS{'ip'}\E\b/;
+        $OPTS{'dove_ip'} = qr/rip=\Q$OPTS{'ip'}\E\b/;
+        $OPTS{'exim_at'} = POSIX::strftime("%F %H:", CORE::localtime($at));
+        $OPTS{'dove_at'} = POSIX::strftime("%b %e %H:", CORE::localtime($at));
+
+        return 1;
+    }
+
     if (defined $OPTS{'around'}) {
         my %around;
         my ($sec, $min, $hour) = (CORE::localtime(str2time($OPTS{'around'})))[0,1,2];
@@ -4097,6 +4188,10 @@ sub filter_exim_logs {
     parse_logs(\&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
     SpamReport::Data::close_preparse();
 }
+sub ip_at {
+    parse_logs(\&SpamReport::Exim::ip_at, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
+    parse_logs(\&SpamReport::Maillog::ip_at, glob '/var/log/maillog{,{-*,.?}.gz}');
+}
 sub parse_exim_logs {
     parse_logs(\&SpamReport::Exim::parse_exim_mainlog, glob '/var/log/exim_mainlog{,{-*,.?}.gz}');
     SpamReport::Data::merge_counters(keys %{$data->{'OPTS'}{'exim_days'}});
@@ -4227,7 +4322,16 @@ sub main {
 
     SpamReport::Data::disable() if $OPTS{'uncached'};
 
-    if ($OPTS{'op'} eq 'preparse' || !SpamReport::Data::all_preparsed_exist(keys %{$OPTS{'exim_days'}})) {
+    if ($OPTS{'op'} eq 'ipat') {
+        SpamReport::Output::head_info(\%OPTS);
+        setup_cpanel();
+        $data->{'OPTS'} = \%OPTS;
+        ip_at();
+        DumpFile($OPTS{'dump'}.".ipat", $data) if $OPTS{'dump'};
+        SpamReport::Output::ip_at();
+        exit;
+    }
+    elsif ($OPTS{'op'} eq 'preparse' || !SpamReport::Data::all_preparsed_exist(keys %{$OPTS{'exim_days'}})) {
         SpamReport::Output::head_info(\%OPTS);
         setup_cpanel();
         $data->{'OPTS'} = \%OPTS;
@@ -4500,6 +4604,7 @@ options:
                 | --scripts             : print scripts report
                 | --md5 <md5sum>        : print details about a script md5sum
                 | --helos               : print HELO report
+                | --ip <ip> --at <time> : look for IP activity in an hour
 
     -w          | --without=<u1 u2 ..>  : remove users' email before reporting
     -f          | --full                : don't remove ticketed users' email
@@ -4528,6 +4633,7 @@ Usage:
     spamreport --scripts [--full]
     spamreport --md5 <md5sum>
     spamreport --helos [--full] [-u <user>]
+    spamreport --ip 1.2.3.4 --at '<time>'
 
     spamreport --without "baduser boringuser checkeduser" [...]
 
