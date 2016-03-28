@@ -1802,8 +1802,14 @@ sub print_queue_results {
 }
 
 my %user_tests = (
-    bounce_recipient => sub { map { $_ eq $_[1] } split(/ /, $_[0]->recipient_users) },
-    bounce_source => sub { $_[0]->source eq $_[1] },
+    bounce_recipient => sub {
+        for (split(/ /, $_[0]->recipient_users)) {
+            return 1 if $_ eq $_[1];
+        }
+        undef;
+    },
+    bounce_source => sub { ref($_[0]) eq 'SpamReport::Email::AuthBounce'
+                        && $_[0]->source eq $_[1] },
     who => sub {
         return 1 if $_[0]->who eq $_[1];
         if ($_[1] eq $data->{'domain2user'}{$_[0]->sender_domain}) {
@@ -1830,7 +1836,8 @@ my %reseller_tests = do {
             }
             return
         },
-        bounce_source => sub { return exists $resolds{$_[0]->source} },
+        bounce_source => sub { ref($_[0]) eq 'SpamReport::Email::AuthBounce'
+                            && exists $resolds{$_[0]->source} },
         who => sub { exists $resolds{$_[0]->who} },
         path => sub {
             return unless $_[0] =~ m,^/[^/]+/([^/]+)/,;
