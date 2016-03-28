@@ -224,7 +224,6 @@ sub try_advance {
         warn $@;
         return open_preparse($date)
     }
-    return open_preparse($date) if $@;
     return open_preparse($date) unless
         $logfile eq $data->{$date}{'last_line'}{'logfile'} &&
         $inode == $data->{$date}{'last_line'}{'inode'};
@@ -235,14 +234,7 @@ sub try_advance {
     open $data->{'out'}{$date}, '|-', "$gzip >> $tmp"
         or die "Couldn't fork $gzip for /opt/hgmods/logs/$date.gz : $!";
     $data->{'outmap'}{$tmp} = "/opt/hgmods/logs/$date.gz";
-
-    if (defined $ENV{'DEBUG_SEEK'}) {
-        open my $f, '>>', "/root/spamreport/.seeklog";
-        print {$f} "Advanced to ", $data->{$date}{'last_line'}{'tell'}, ": ",
-            $data->{$date}{'last_line'}{'line'}, "\n";
-        close $f;
-        $data->{'advanced'} = 1;
-    }
+    $data->{'advanced'} = 1;
 }
 
 sub last_line {
@@ -560,6 +552,7 @@ use vars qw($VERSION);
 use File::Which qw ( which );
 use Time::Local;
 use SpamReport::GeoIP;
+use SpamReport::Data;
 use Proc::Daemon;
 use common::sense;
 
@@ -578,8 +571,10 @@ sub background_check {
     SpamReport::Tracking::Performance::args("(background script md5sums)");
 
     load();
-    for (keys %$tracking) {
-        delete $tracking->{$_}{$midnight};
+    unless ($data->{'advanced'}) { # if we seek()ed, then any @scripts are new
+        for (keys %$tracking) {
+            delete $tracking->{$_}{$midnight};
+        }
     }
     script(@$_) for @scripts;
     save();
@@ -3676,7 +3671,7 @@ my %OPTS = (
     # other values: user, script, md5, logins, forwarders, helos, cachelist
 
     # feature categories
-    'use_seek'      => 0,
+    'use_seek'      => 1,
 
     # summary categories
     'with_queue'    => 1,
@@ -3774,7 +3769,6 @@ sub check_options {
             'cron'        => sub { $OPTS{'op'} = 'preparse'; $OPTS{'load'} = undef; $OPTS{'with_queue'} = undef; $OPTS{'save'} = 0; $OPTS{'latest'} = undef },
             'refresh'     => sub { $OPTS{'latest'} = undef },
             'oldlatest'   => sub { $OPTS{'load'} = 'cache' },
-            'seek'        => \$OPTS{'use_seek'},  # experimental
 
             'help|?'      => sub { HelpMessage() },
             'man'         => sub { pod2usage(-exitval => 0, -verbose => 2) },
@@ -4049,13 +4043,6 @@ sub parse_logs {
             $last_tell = File::Nonblock::tell($log);
             if ( $last_tell != 0 ) {
                 show_progress($log, 'Reading')
-            }
-
-            if (defined($ENV{'DEBUG_SEEK'}) && $data->{'advanced'}) {
-                $data->{'advanced'} = 0;
-                open my $f, '>>', "/root/spamreport/.seeklog";
-                print {$f} "Next line: ", $lines->[0], "\n\n";
-                close $f;
             }
 
             $last_line = $handler->($lines, $year, $OPTS{'end_time'}, $in_zone);
