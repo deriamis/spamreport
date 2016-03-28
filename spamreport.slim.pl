@@ -3717,7 +3717,7 @@ sub check_options {
         $OPTS{'report'} = 'user';
         $OPTS{'full'} = 1;
         $OPTS{'hourly_report'} = 1;
-        GetOptions(
+        $result = GetOptions(
             'start|s=s'   => sub { $time_changed++; $OPTS{'start_time'} = $_[1]; },
             'end|e=s'     => sub { $time_changed++; $OPTS{'end_time'} = $_[1]; },
             'hours|h=i'   => sub { $time_changed++; $OPTS{'search_hours'} = $_[1]; },
