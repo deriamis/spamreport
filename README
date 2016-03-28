@@ -68,7 +68,8 @@ CACHE
 
     The expectation is that this command will be in a cronjob that will run
     once an hour, and that normal report runs, by users, will never actually
-    need to parse the exim log themselves.
+    need to parse the exim log themselves (unless they request times that don't
+    have cache files).
 
     The preparsing is very parsimonious with memory, using never more than 30MB
     or so of RSS even when working with 4GB log files.  Report runs can retain a
@@ -76,26 +77,31 @@ CACHE
     megabytes for reports involving several millions of emails.
 
     Preparsing and reporting are also reasonably quick.  The first ever run on
-    a reseller with 4GB logs may take 7 minutes or so, but every subsequent run can
-    take advantage of the previous days' cache and may only run in 30 seconds, down
-    from 7 minutes.  An experimental feature, which is already functional but
-    just needs some tire-kicking, allows spamreport to seek() to where the last run
-    finished, at an enormous time savings for --cron runs after the very first.
+    a reseller with 4GB logs may take 7 minutes or so, but every subsequent run
+    can take advantage of the previous days' cache and may only run in 30
+    seconds, down from 7 minutes.  Most cron runs will seek() to the position
+    the previous cron stopped at.
 
 FILES
 
-    spamperformance.log - keeps one-line log entries of how performant
-        spamreport runs are.  spamreport removes old entries from this file to ensure
-        that it doesn't grow too large.
-    
     YYYY-MM-DD.gz - a gzipped preparsed log of exim data from the given date.
         The format is line-based, with each line containing NUL-separated fields,
-        without explicit keys.  The first field is the Class::Struct package name that
-        the record should be unpacked into when loaded.  These are packages like
-        SpamReport::Email , SpamReport::Email::Bounce , etc.
+        without explicit keys.  The first field is the Class::Struct package
+        name that the record should be unpacked into when loaded.  These are
+        packages like SpamReport::Email , SpamReport::Email::Bounce , etc.
 
     YYYY-MD-DD.stor - a Storable file containing metadata from the given date.
         These are mostly counters, many of them not reproducible from the
         associated preparsed logs.  preparse merges all of these counters
-        together to know, for example, the total number of outgoing emails for a time
-        period.
+        together to know, for example, the total number of outgoing emails for
+        a time period.
+
+    spamperformance.log - keeps one-line log entries of how performant
+        spamreport runs are.  spamreport removes old entries from this file to
+        ensure that it doesn't grow too large.
+
+    spamscripts.dat - YAML file mapping md5sums -> day (@midnight) -> ip, path
+        counts.  As md5sums take quite a long time, they're only gathered on
+        --cron runs and they're gathered by a background process that does
+        nothing but perform the md5sums and update this file.  Old md5sums are
+        rotated out of the file independently of normal log rotation.

@@ -4232,7 +4232,7 @@ sub main {
         setup_cpanel();
         $data->{'OPTS'} = \%OPTS;
         filter_exim_logs() if $OPTS{'want_eximlog'};
-        SpamReport::Tracking::Scripts::background_check();
+        SpamReport::Tracking::Scripts::background_check() if $OPTS{'op'} eq 'preparse';
         DumpFile($OPTS{'dump'}.".parse", $data) if $OPTS{'dump'};
         if ($OPTS{'save'}) {
             SpamReport::Data::merge_counters(keys %{$OPTS{'exim_days'}});
@@ -4296,7 +4296,7 @@ sub main {
     if ($OPTS{'load'} eq 'no') {
         # no need to load data
         SpamReport::Output::head_info($data->{'OPTS'});
-        SpamReport::Tracking::Scripts::background_check();
+        #SpamReport::Tracking::Scripts::background_check();
     } elsif ($OPTS{'load'} eq 'cache') {
         SpamReport::Data::load() && $cacheloaded++
     }
@@ -4321,7 +4321,7 @@ sub main {
         SpamReport::Data::save() if $OPTS{'save'} && !$cacheloaded
             && !(defined($OPTS{'user'}) or
                  defined($OPTS{'without'}));
-        SpamReport::Tracking::Scripts::background_check() unless $OPTS{'load'} eq 'preparse';
+        #SpamReport::Tracking::Scripts::background_check() unless $OPTS{'load'} eq 'preparse';
     }
     SpamReport::Tracking::Suspensions::load();
     SpamReport::GeoIP::init();
