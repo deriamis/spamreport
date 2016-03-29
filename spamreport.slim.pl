@@ -823,18 +823,21 @@ if (-s($trackpath) > 1024*1024) {
 
 my $start = time();
 my $ARGS = "@ARGV";
+my $pid = $$;
 
-sub args { $ARGS = shift }
+sub args { $ARGS = shift; $pid = $$; }
 
 END {
-    my $end = time();
-    if (open my $f, '>>', $trackpath) {
-        printf {$f} "%s + %d secs : %d tracked emails : %s\n", 
-            scalar(localtime($start)),
-            $end - $start, 
-            $data->{'total_email'}||0,
-            $ARGS;
-        close $f;
+    if ($pid == $$) {
+        my $end = time();
+        if (open my $f, '>>', $trackpath) {
+            printf {$f} "%s + %d secs : %d tracked emails : %s\n",
+                scalar(localtime($start)),
+                $end - $start,
+                $data->{'total_email'}||0,
+                $ARGS;
+            close $f;
+        }
     }
 }
 
@@ -4581,8 +4584,9 @@ USAGE
 
 __PACKAGE__->main unless caller; # call main function unless we were included as a module
 
+my $pid = $$;
 END {
-    DumpFile($OPTS{'dump'}.".post", $data) if $OPTS{'dump'};
+    DumpFile($OPTS{'dump'}.".post", $data) if $pid == $$ && $OPTS{'dump'};
 }
 
 1;
