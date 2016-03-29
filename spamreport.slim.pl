@@ -69,6 +69,8 @@ struct(
     source => '$',
 );
 
+sub get_recipient_users { split(/ /, $_[0]->recipient_users) }
+
 sub validate {
     my ($self) = @_;
     return defined($self->date)
@@ -101,6 +103,8 @@ struct(
     recipient_users => '$',
     who => '$',
 );
+
+sub get_recipient_users { split(/ /, $_[0]->recipient_users) }
 
 sub validate {
     my ($self) = @_;
@@ -154,6 +158,8 @@ struct(
     recipient_users => '%',
     who => '$',
 );
+
+sub get_recipient_users { keys %{$_[0]->recipient_users} }
 
 sub validate { 1 }
 
@@ -1806,7 +1812,7 @@ sub print_queue_results {
 
 my %user_tests = (
     bounce_recipient => sub {
-        for (split(/ /, $_[0]->recipient_users)) {
+        for ($_[0]->get_recipient_users) {
             return 1 if $_ eq $_[1];
         }
         undef;
@@ -1872,7 +1878,8 @@ sub analyze_user_results {
 
     SpamReport::Analyze::email(sub {
         my $email = shift;
-        if (ref($email) eq 'SpamReport::Email::Queue') {
+        if (ref($email) eq 'SpamReport::Email::Queue'
+            && $tests->{'bounce_recipient'}($email, $user)) {
             $queued++
         }
         elsif (ref($email) eq 'SpamReport::Email') {
@@ -3163,7 +3170,6 @@ sub parse_queued_mail_data {
         if ($email{'type'} ne 'bounce' && exists($data->{'domain2user'}{lc($email{'sender_domain'})})) {
             # not a bounce and for a local domain?  it may be an issue but we don't care here
             $data->{'local_queue'}++;
-            delete $data->{'mail_ids'}{$mail_id};
             next;
         }
 
@@ -3413,19 +3419,26 @@ sub parse_recv_email {
 }
 
 sub analyze_queued_mail_data {
-    for my $email (values %{$data->{'mail_ids'}}) {
-        next unless $email->{'in_queue'};
-        $data->{'script'}{$email->{'script'}}++ if exists $email->{'script'};
-        for (qw(source auth_id ident auth_sender sender sender_domain)) {
-            next if $_ eq 'sender' && $email->{sender} eq 'mailer-daemon';
-            next if $_ eq 'ident' && $email->{ident} eq 'mailnull';
-            next if $_ eq 'source' && $email->{source} =~ /^gateway\d+\.websitewelcome\.com$/;
-            $data->{'queue_top'}{$_}{$email->{$_}}++ if defined $email->{$_}
+    for my $email (@{$data->{'queue'}}) {
+        next unless ref($email) eq 'SpamReport::Email::Queue';
+        $data->{'script'}{$email->script}++ if defined $email->script;
+
+        $data->{'queue_top'}{'sender'}{$email->sender}++ if defined $email->sender
+            && $email->sender ne 'mailer-daemon';
+        $data->{'queue_top'}{'ident'}{$email->ident}++ if defined $email->ident
+            && $email->ident ne 'mailnull';
+        $data->{'queue_top'}{'source'}{$email->source}++ if defined $email->source
+            && $email->source !~ /^gateway\d+\.websitewelcome\.com$/;
+
+        $data->{'queue_top'}{'auth_id'}{$email->auth_id}++ if defined $email->auth_id;
+        $data->{'queue_top'}{'auth_sender'}{$email->auth_sender}++ if defined $email->auth_sender;
+        $data->{'queue_top'}{'sender_domain'}{$email->sender_domain}++ if defined $email->sender_domain;
+
+        for (keys %{$email->recipient_domains}) {
+            $data->{'queue_top'}{'recipient_domains'}{$_}++
         }
-        for my $field (qw(recipient_domains recipient_users)) {
-            for (keys %{$email->{$field}}) {
-                $data->{'queue_top'}{$field}{$_}++
-            }
+        for (keys %{$email->recipient_users}) {
+            $data->{'queue_top'}{'recipient_users'}{$_}++
         }
     }
 }
