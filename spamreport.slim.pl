@@ -2038,7 +2038,13 @@ sub user_ticket_report {
     my @tickets;
     my $r = "----------------------------------------\n\n";
     my @widths = (0, 0, 0, 0);
-    for my $u (sort $user, @{$data->{'owner2user'}{$user}}) {
+    my %users = ($user, 1);
+    if ($user eq 'root') {
+        for (keys %{$data->{'suspensions'}}) { $users{$_}++ }
+    } elsif ($isreseller) {
+        for (@{$data->{'owner2user'}{$user}}) { $users{$_}++ }
+    }
+    for my $u (sort keys %users) {
         my @t = SpamReport::Tracking::Suspensions::tickets($u);
         next unless @t;
         for my $t (@t) {
