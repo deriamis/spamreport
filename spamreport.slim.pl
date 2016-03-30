@@ -1562,7 +1562,15 @@ sub top_auth {
 sub print_auth_mismatch {
     print "\n${GREEN}Authorization$NULL vs. sender domain mismatches\n";
     my @widths = (0, 0, 0, 0);
-    for (keys %{$data->{'auth_mismatch'}}) {
+
+    my @auths = sort { $data->{'auth_mismatch'}{$b}{'count'} <=>
+                       $data->{'auth_mismatch'}{$a}{'count'} }
+                keys %{$data->{'auth_mismatch'}};
+    my $omitted = @auths;
+    splice(@auths,15) unless $data->{'OPTS'}{'full'};
+    $omitted -= @auths;
+
+    for (@auths) {
         my ($s, $i, $c, $u) = map { length $_ } (
             $_,
             scalar(keys(%{$data->{'auth_mismatch'}{$_}{'ip'}})),
@@ -1574,9 +1582,7 @@ sub print_auth_mismatch {
         setmax $u => $widths[2];
         setmax $s => $widths[3];
     }
-    for (sort { $data->{'auth_mismatch'}{$b}{'count'} <=>
-                $data->{'auth_mismatch'}{$a}{'count'} }
-            keys %{$data->{'auth_mismatch'}}) {
+    for (@auths) {
         printf "%$widths[0]d %$widths[1]d %$widths[2]s %s %s %s\n",
             $data->{'auth_mismatch'}{$_}{'count'},
             scalar(keys(%{$data->{'auth_mismatch'}{$_}{'ip'}})),
@@ -1584,6 +1590,10 @@ sub print_auth_mismatch {
             $_,
             top_country($data->{'auth_mismatch'}{$_}{'country'}),
             top_auth($data->{'auth_mismatch'}{$_}{'auth'})
+    }
+    if ($omitted) {
+        print "\n$omitted auth mismatches were hidden"
+            . (defined $ENV{RUSER} ? "; re-run with --full to see them.\n" : ".\n")
     }
 }
 
