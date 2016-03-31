@@ -3275,7 +3275,8 @@ sub parse_exim_mainlog {
                   | (<=)                       # $7
                   | SMTP \s connection \s outbound \s
                     \d+ \s \5 \s \S+ \s \S+ \s
-                    I=(\S+) \s S=\S+ \s F=(\S+)$   # $8 $9
+                    (?: I=(\S+) \s S=\S+ \s )? # $8
+                    F=(\S+)$                   # $9
                   | \*\* (?>.* R=)enforce_mail_permissionsHG:
                     \s Domain \s (\S+) \s has \s exceeded \s the \s max \s emails) $10
              | cwd=(/home\S+)(?!.*-FCronDaemon)) # $11
@@ -3290,9 +3291,13 @@ sub parse_exim_mainlog {
             $data->{$date}{'scriptdirs'}{$cwd}++;
             next
         }
-        if ( defined $script_ip ) {
+        if ( defined $script_ip && defined $script_file ) {
             $data->{$date}{'outscript'}{$script_file}++;
             SpamReport::Tracking::Scripts::track($script_file, $script_ip);
+            next;
+        }
+        if ( defined $script_file ) {
+            $data->{$date}{'outscript'}{$script_file}++;
             next;
         }
         if ( defined $exceed ) {
