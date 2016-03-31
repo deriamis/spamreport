@@ -3278,7 +3278,7 @@ sub parse_exim_mainlog {
                     (?: I=(\S+) \s S=\S+ \s )? # $8
                     F=(\S+)$                   # $9
                   | \*\* (?>.* R=)enforce_mail_permissionsHG:
-                    \s Domain \s (\S+) \s has \s exceeded \s the \s max \s emails) $10
+                    \s Domain \s (\S+) \s has \s exceeded \s the \s max \s emails)
              | cwd=(/home\S+)(?!.*-FCronDaemon)) # $11
         )x;
         my ($date, $time, $mailid, $bounce, $recv, $script_ip, $script_file, $exceed, $cwd) =
