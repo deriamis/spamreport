@@ -4,6 +4,8 @@ export PERL_MB_OPT := --install_base "${PWD}"
 export PERL_MM_OPT := INSTALL_BASE=${PWD}
 ASSETS=build/ipscountry.dat build/ip.gif build/cc.gif
 
+.PHONY: deps all install clean distclean lib
+
 all:: lib build/spamreport $(ASSETS)
 
 help::
@@ -19,28 +21,35 @@ install:: $(ASSETS)
 	cp -pv $(ASSETS) /root/bin/
 
 clean::
-	rm -rfv build packlists
+	rm -rfv build packlists fatlib
 
 distclean:: clean
-	rm -rfv bin lib fatlib fatpacker.trace man
+	rm -rfv man
+	find $(PWD)/bin/ -mindepth 1 -maxdepth 1 -newer bin/.timestamp -exec rm -rfv {} \;
+	find $(PWD)/lib/perl5/ -mindepth 1 -maxdepth 1 -newer lib/.timestamp -exec rm -rfv {} \;
+	rm -fv $(PWD)/bin/.timestamp $(PWD)/lib/.timestamp
+	rm -fv fatpacker.trace lib/perl5/ok.pm lib/perl5/SpamReport.pl lib/perl5/SpamReport.pm
 
-lib:
+lib/.timestamp bin/.timestamp:
+	touch $@
+
+lib: bin/.timestamp lib/.timestamp
 	mkdir -pv $@/perl5
 	make depend
 
-depend:: lib/perl5/SpamReport.pl
-	cpanm -L ./ --exclude-vendor --no-man-pages --installdeps ./
+depend:: spamreport.slim.pl deps.pl
+	perl bin/cpanm -L ./ --exclude-vendor --no-man-pages --installdeps ./
 
 lib/perl5/SpamReport.pl: spamreport.slim.pl deps.pl
 	perl deps.pl $<
 	mv lib/perl5/SpamReport.pm lib/perl5/SpamReport.pl
 
 bin/fatpack:
-	cpanm -L ./ --exclude-vendor --no-man-pages App::FatPacker App::cpanminus
+	perl bin/cpanm -L ./ --exclude-vendor --no-man-pages App::FatPacker App::cpanminus
 
-build/spamreport: lib/perl5/SpamReport.pl bin/fatpack
+build/spamreport: lib lib/perl5/SpamReport.pl bin/fatpack
 	mkdir -p build
-	perl bin/fatpack trace lib/perl5/SpamReport.pl
+	perl bin/fatpack trace lib/perl5/SpamReport.pl 2>/dev/null
 	perl bin/fatpack packlists-for $$(cat fatpacker.trace) > packlists
 	perl bin/fatpack tree $$(cat packlists)
 	(echo -e "#!/usr/bin/perl\n"; perl bin/fatpack file 2>/dev/null; cat lib/perl5/SpamReport.pl) > $@
