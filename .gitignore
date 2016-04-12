@@ -1,6 +1,5 @@
 fatpacker.trace
 packlists
-ipscountry.dat
 fatlib/
 lib/
 !lib/perl5/App/
