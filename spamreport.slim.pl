@@ -5,23 +5,23 @@ package SpamReport::Email;
 use Class::Struct;
 
 struct(
-    date => '$',
-    time => '$',
-    subject => '$',
-    recipients => '$',
-    script => '$',
-    sender => '$',
-    sender_domain => '$',
-    host_auth => '$',
-    auth_sender => '$',
-    auth_sender_domain => '$',
-    received_protocol => '$',
-    ident => '$',
-    who => '$',
-    ip => '$',
-    helo => '$',
-    source => '$',
-    auth_id => '$',
+    date               => '$', # 2016-04-12
+    time               => '$', # 403 (seconds since midnight)
+    subject            => '$', # Hello (given T="Hello" in logs)
+    recipients         => '$', # bob@somedomain.net
+    script             => '$', # domain.com/path/to/script.php (rare)
+    sender             => '$', # bob@somedomain.net (of "from bob@..." in logs)
+    sender_domain      => '$', # somedomain.net
+    host_auth          => '$', # A=dovecot_plain
+    auth_sender        => '$', # bob (given "A=dovecot_plain:bob"; usually is mailbox)
+    auth_sender_domain => '$', # somedomain.com (given "A=dovecot_plain:bob@somedomain.com")
+    received_protocol  => '$', # esmtpsa (given P=esmtpsa)
+    ident              => '$', # bob (given U=bob)
+    who                => '$', # bob (inferred from other fields)
+    ip                 => '$', # 1.2.3.4 (given ([1.2.3.4]))
+    helo               => '$', # somedomain.com ([1.2.3.4] [1.2.3.4]:1234)
+    source             => '$', # (unused - present in queued email)
+    auth_id            => '$', # (unused - present in queued email)
 );
 
 sub validate {
@@ -45,6 +45,30 @@ sub unserialize {
     bless \@fields, $class
 }
 
+# :-(
+sub to_hash {
+    my ($self, $verbose) = @_;
+    my $h;
+    $h->{'date'} = $self->date if $verbose || defined($self->date);
+    $h->{'time'} = $self->time if $verbose || defined($self->time);
+    $h->{'subject'} = $self->subject if $verbose || defined($self->subject);
+    $h->{'recipients'} = $self->recipients if $verbose || defined($self->recipients);
+    $h->{'script'} = $self->script if $verbose || defined($self->script);
+    $h->{'sender'} = $self->sender if $verbose || defined($self->sender);
+    $h->{'sender_domain'} = $self->sender_domain if $verbose || defined($self->sender_domain);
+    $h->{'host_auth'} = $self->host_auth if $verbose || defined($self->host_auth);
+    $h->{'auth_sender'} = $self->auth_sender if $verbose || defined($self->auth_sender);
+    $h->{'auth_sender_domain'} = $self->auth_sender_domain if $verbose || defined($self->auth_sender_domain);
+    $h->{'received_protocol'} = $self->received_protocol if $verbose || defined($self->received_protocol);
+    $h->{'ident'} = $self->ident if $verbose || defined($self->ident);
+    $h->{'who'} = $self->who if $verbose || defined($self->who);
+    $h->{'ip'} = $self->ip if $verbose || defined($self->ip);
+    $h->{'helo'} = $self->helo if $verbose || defined($self->helo);
+    $h->{'source'} = $self->source if $verbose || defined($self->source);
+    $h->{'auth_id'} = $self->auth_id if $verbose || defined($self->auth_id);
+    $h
+}
+
 1;
 } # end module SpamReport::Email
 BEGIN {
@@ -56,17 +80,17 @@ package SpamReport::Email::AuthBounce;
 use Class::Struct;
 
 struct(
-    date => '$',
-    time => '$',
-    subject => '$',
-    recipients => '$',
-    recipient_users => '$',
-    script => '$',
-    host_auth => '$',
-    auth_sender => '$',
-    auth_sender_domain => '$',
-    who => '$',
-    source => '$',
+    date               => '$', # 2016-04-12
+    time               => '$', # 403 (seconds since midnight)
+    subject            => '$', # Hello (given T="Hello" in logs)
+    recipients         => '$', # bob@somedomain.net
+    recipient_users    => '$', # bob (f.e. if recipients is joe@a-bob-domain.com)
+    script             => '$', # domain.com/path/to/script.php (rare)
+    host_auth          => '$', # A=dovecot_plain
+    auth_sender        => '$', # bob (given "A=dovecot_plain:bob"; usually is mailbox)
+    auth_sender_domain => '$', # somedomain.com (given "A=dovecot_plain:bob@somedomain.com")
+    who                => '$', # bob (inferred from other fields)
+    source             => '$', # (unused - present in queued email)
 );
 
 sub get_recipient_users { split(/ /, $_[0]->recipient_users) }
@@ -85,6 +109,24 @@ sub validate {
 
 sub serialize { &SpamReport::Email::serialize }
 
+# :-(
+sub to_hash {
+    my ($self, $verbose) = @_;
+    my $h;
+    $h->{'date'} = $self->date if $verbose || defined($self->date);
+    $h->{'time'} = $self->time if $verbose || defined($self->time);
+    $h->{'subject'} = $self->subject if $verbose || defined($self->subject);
+    $h->{'recipients'} = $self->recipients if $verbose || defined($self->recipients);
+    $h->{'recipient_users'} = $self->recipient_users if $verbose || defined($self->recipient_users);
+    $h->{'script'} = $self->script if $verbose || defined($self->script);
+    $h->{'host_auth'} = $self->host_auth if $verbose || defined($self->host_auth);
+    $h->{'auth_sender'} = $self->auth_sender if $verbose || defined($self->auth_sender);
+    $h->{'auth_sender_domain'} = $self->auth_sender_domain if $verbose || defined($self->auth_sender_domain);
+    $h->{'who'} = $self->who if $verbose || defined($self->who);
+    $h->{'source'} = $self->source if $verbose || defined($self->source);
+    $h
+}
+
 1;
 } # end module SpamReport::Email::AuthBounce
 BEGIN {
@@ -96,12 +138,12 @@ package SpamReport::Email::Bounce;
 use Class::Struct;
 
 struct(
-    date => '$',
-    time => '$',
-    recipients => '$',
-    script => '$',
-    recipient_users => '$',
-    who => '$',
+    date            => '$', # 2016-04-12
+    time            => '$', # 403 (seconds since midnight)
+    recipients      => '$', # bob@somedomain.net
+    script          => '$', # domain.com/path/to/script.php (rare)
+    recipient_users => '$', # bob (f.e. if recipients is joe@a-bob-domain.com)
+    who             => '$', # bob (inferred from other fields)
 );
 
 sub get_recipient_users { split(/ /, $_[0]->recipient_users) }
@@ -118,6 +160,19 @@ sub validate {
 
 sub serialize { &SpamReport::Email::serialize }
 
+# :-(
+sub to_hash {
+    my ($self, $verbose) = @_;
+    my $h;
+    $h->{'date'} = $self->date if $verbose || defined($self->date);
+    $h->{'time'} = $self->time if $verbose || defined($self->time);
+    $h->{'recipients'} = $self->recipients if $verbose || defined($self->recipients);
+    $h->{'script'} = $self->script if $verbose || defined($self->script);
+    $h->{'recipient_users'} = $self->recipient_users if $verbose || defined($self->recipient_users);
+    $h->{'who'} = $self->who if $verbose || defined($self->who);
+    $h
+}
+
 1;
 } # end module SpamReport::Email::Bounce
 BEGIN {
@@ -129,34 +184,33 @@ package SpamReport::Email::Queue;
 use Class::Struct;
 
 struct(
-    ident => '$',
-    received_protocol => '$',
-    auth_id => '$',
-    auth_sender => '$',
-    helo_name => '$',
-    host_address => '$',
-    host_auth => '$',
-    interface_address => '$',
-    frozen => '$',
-    deliver_firsttime => '$',
-    host_lookup_failed => '$',
-    local => '$',
-    localerror => '$',
-    sender => '$',
-    num_recipients => '$',
-    script => '$',
-    boxtrapper => '$',
-    subject => '$',
-    recipients => '$',
-    type => '$',
-    source => '$',
-    state => '$',
-    location => '$',
-    sender_domain => '$',
-    recipients => '@',
-    recipient_domains => '%',
-    recipient_users => '%',
-    who => '$',
+    ident              => '$', # bob (given U=bob)
+    received_protocol  => '$', # esmtpsa (given P=esmtpsa)
+    auth_id            => '$', # (unused - present in queued email)
+    auth_sender        => '$', # bob (given "A=dovecot_plain:bob"; usually is mailbox)
+    helo_name          => '$', # somedomain.com
+    host_address       => '$', # 1.2.3.4.1234
+    host_auth          => '$', # A=dovecot_plain
+    interface_address  => '$', # interface that accepted the email
+    frozen             => '$', # true if frozen
+    deliver_firsttime  => '$', # true if found in queue header
+    host_lookup_failed => '$', # true if found in queue header
+    local              => '$', # true if found in queue header
+    localerror         => '$', # true if found in queue header
+    sender             => '$', # bob@somedomain.net (of "from bob@..." in logs)
+    num_recipients     => '$', # count of recipients
+    script             => '$', # domain.com/path/to/script.php (rare)
+    boxtrapper         => '$', # true if generated by boxtrapper
+    subject            => '$', # Hello (given T="Hello" in logs)
+    type               => '$', # one of 'bounce local login relay
+    source             => '$', # (unused - present in queued email)
+    state              => '$', # one of: queued frozen thawed
+    location           => '$', # 'queue'
+    sender_domain      => '$', # somedomain.net
+    recipients         => '@', # ('bob@somedomain.net', ...)
+    recipient_domains  => '%', # map of $domain => $count
+    recipient_users    => '%', # map of $user => $count
+    who                => '$', # bob (inferred from other fields)
 );
 
 sub get_recipient_users { keys %{$_[0]->recipient_users} }
@@ -164,6 +218,40 @@ sub get_recipient_users { keys %{$_[0]->recipient_users} }
 sub validate { 1 }
 
 sub serialize { die "Attempted to serialize a queue'd email" }
+
+# :-(
+sub to_hash {
+    my ($self, $verbose) = @_;
+    my $h;
+    $h->{'ident'} = $self->ident if $verbose || defined($self->ident);
+    $h->{'received_protocol'} = $self->received_protocol if $verbose || defined($self->received_protocol);
+    $h->{'auth_id'} = $self->auth_id if $verbose || defined($self->auth_id);
+    $h->{'auth_sender'} = $self->auth_sender if $verbose || defined($self->auth_sender);
+    $h->{'helo_name'} = $self->helo_name if $verbose || defined($self->helo_name);
+    $h->{'host_address'} = $self->host_address if $verbose || defined($self->host_address);
+    $h->{'host_auth'} = $self->host_auth if $verbose || defined($self->host_auth);
+    $h->{'interface_address'} = $self->interface_address if $verbose || defined($self->interface_address);
+    $h->{'frozen'} = $self->frozen if $verbose || defined($self->frozen);
+    $h->{'deliver_firsttime'} = $self->deliver_firsttime if $verbose || defined($self->deliver_firsttime);
+    $h->{'host_lookup_failed'} = $self->host_lookup_failed if $verbose || defined($self->host_lookup_failed);
+    $h->{'local'} = $self->local if $verbose || defined($self->local);
+    $h->{'localerror'} = $self->localerror if $verbose || defined($self->localerror);
+    $h->{'sender'} = $self->sender if $verbose || defined($self->sender);
+    $h->{'num_recipients'} = $self->num_recipients if $verbose || defined($self->num_recipients);
+    $h->{'script'} = $self->script if $verbose || defined($self->script);
+    $h->{'boxtrapper'} = $self->boxtrapper if $verbose || defined($self->boxtrapper);
+    $h->{'subject'} = $self->subject if $verbose || defined($self->subject);
+    $h->{'type'} = $self->type if $verbose || defined($self->type);
+    $h->{'source'} = $self->source if $verbose || defined($self->source);
+    $h->{'state'} = $self->state if $verbose || defined($self->state);
+    $h->{'location'} = $self->location if $verbose || defined($self->location);
+    $h->{'sender_domain'} = $self->sender_domain if $verbose || defined($self->sender_domain);
+    $h->{'recipients'} = $self->recipients if $verbose || defined($self->recipients);
+    $h->{'recipient_domains'} = $self->recipient_domains if $verbose || defined($self->recipient_domains);
+    $h->{'recipient_users'} = $self->recipient_users if $verbose || defined($self->recipient_users);
+    $h->{'who'} = $self->who if $verbose || defined($self->who);
+    $h
+}
 
 1;
 } # end module SpamReport::Email::Queue
@@ -209,7 +297,7 @@ use File::Temp;
 use common::sense;
 
 use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
-use vars qw($logpath $cronpath);
+use vars qw($logpath $cronpath $noisy);
 $VERSION = '2016022601';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
@@ -319,7 +407,7 @@ sub stream_preparse {
             or die "Unable to open /opt/hgmods/logs/$_.gz : $!";
         eval { $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor") };
         warn $@ if $@;
-        print "Streaming preparse log /opt/hgmods/logs/$_.gz\n";
+        print "Streaming preparse log /opt/hgmods/logs/$_.gz\n" if $noisy;
     }
     $data->{'in_streams'} = [@_];
 }
@@ -1034,6 +1122,53 @@ sub analyze {
     $_->() for @finally;
 }
 
+sub latest_exim_days {
+    my $days = shift;
+    my @days = grep { defined $_ }
+               map { m,/(\d+-\d+-\d+)\.gz$, && $1 }
+               sort { -M $a <=> -M $b }
+               glob('/opt/hgmods/logs/*.gz');
+    @days = grep { defined $_ } @days[0..$days-1];
+    for (@days) {
+        $data->{'OPTS'}{'exim_days'}{$_}++;
+    }
+    return @days
+}
+
+sub analyze_latest {
+    my ($days, $sub) = @_;
+    my @days = latest_exim_days($days);
+    email($sub);
+    analyze();
+    return @days;
+}
+
+sub latest_metadata {
+    my ($days, $sub) = @_;
+    my @days = latest_exim_days($days);
+    for (@days) {
+        eval { $data->{$_} = SpamReport::Data::lock_retrieve("/opt/hgmods/logs/$_.stor") };
+    }
+    SpamReport::Data::merge_counters(@days);
+    return @days;
+}
+
+use POSIX 'strftime';
+sub latest_dovecot_days {
+    my $days = shift;
+    my $end = $data->{'OPTS'}{'end_time'} = time;
+    my $start = $data->{'OPTS'}{'start_time'} = time()-($days*3600*24);
+    for (my $i = $end; $i >= $start; $i -= 3600 * 24) {
+        $data->{'OPTS'}{'dovecot_days'}{POSIX::strftime("%b %e", CORE::localtime($i))}++;
+    }
+}
+sub latest_dovecot {
+    latest_dovecot_days(@_);
+    $| = 1;
+    SpamReport::parse_dovecot_logs();
+    SpamReport::GeoIP::init();
+}
+
 1;
 } # end module SpamReport::Analyze
 BEGIN {
@@ -1476,6 +1611,7 @@ sub analyze_mailboxes {
 sub percent_report {
     my ($h, $total, $limit, $title, $discarded, $annotate) = @_;
     return unless $total;
+    $annotate = sub { @_ } unless defined $annotate;
     my @list = sort { $h->{$a} <=> $h->{$b} } grep { $h->{$_} / $total > $limit } keys %$h;
     my @width = (0, 0);
     for (@list) {
@@ -3987,6 +4123,7 @@ sub check_options {
     $OPTS{'dovecot_postdays'} = \%dovecotpost;
     $OPTS{'exim_postdays'} = \%eximpost;
 
+    $SpamReport::Data::noisy = 1;
     return $result;
 }
 
@@ -4154,7 +4291,7 @@ sub parse_logs {
         $logfile = $_;
         my $end_reached;
         my $mtime = (stat($logfile))[9];
-        next if ( $mtime < $OPTS{'start_time'} );
+        next if ( $mtime < $data->{'OPTS'}{'start_time'} );
         my $year = (CORE::localtime($mtime))[5];
         my $allow_year_dec = 1;
         my $lines;
@@ -4175,7 +4312,7 @@ sub parse_logs {
                 show_progress($log, 'Reading')
             }
 
-            $last_line = $handler->($lines, $year, $OPTS{'end_time'}, $in_zone);
+            $last_line = $handler->($lines, $year, $data->{'OPTS'}{'end_time'}, $in_zone);
 
             $allow_year_dec = 0;
         }
@@ -4724,6 +4861,246 @@ Indicator key:
         Text log of spamreport performance data.
 
         $date + $runtime secs : $email tracked emails : @ARGV
+
+=head1 SCRIPTING EXAMPLES
+
+=head2 Skeleton code for simple queries against exim cache
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+
+    SpamReport::Analyze::analyze_latest(<NUMBER OF DAYS>, sub {
+        my $email = shift;
+        <YOUR CODE HERE>
+    });
+
+=head3 Description
+
+    The anonymous subroutine is run once against each email record in the
+    latest # of exim_mainlog cache files.  $email is one of several
+    SpamReport::Email instances of Class::Struct, documented later.
+
+    In addition, metadata is loaded for each cache file.  If you use
+    SpamReport::Data an auto-imported $data hashref will include it.
+
+=head2 exim: Dump email records that include an IP
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+    use YAML::Syck;
+    
+    # only consider emails with an IP field
+    SpamReport::Analyze::filter(sub { eval { defined shift->ip } });
+    
+    SpamReport::Analyze::analyze_latest(3, sub {  # 3: the latest three log files
+        my $email = $_[0]->to_hash();   # ->to_hash(1) to include undefined fields
+        bless $email, ref($_[0]);       # hack to include email type in YAML output
+        print Dump($email);
+    });
+
+=head2 exim: Show top subjects
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+
+    my %subjects;
+    my $total;
+    SpamReport::Analyze::analyze_latest(3, sub {
+        my $email = shift;
+        eval {
+            $subjects{$email->who . ": " . $email->subject}++;
+            $total++;
+        }
+    });
+    SpamReport::Output::percent_report(\%subjects, $total, 1/100, "top subjects");
+
+=head3 Example output:
+
+    Responsibility for 18,492 top subjects
+    5179 28.0% bgalvan: [My Friend Betty Says...] Learn Social. Get Savvy. Find Success: Workshop Recap!
+     401  2.2% mansiten: Escort profile
+     236  1.3% jovia: TIEDOTE: Suomen ensimm\344isen h\344vikkiruokaravintolan joukkorahoituskampanja p\344\344ttyy torstaina
+     193  1.0% vladmedv: Regular views error
+
+=head2 Skeleton code for queries against logins
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+    use SpamReport::Data;
+    SpamReport::Analyze::latest_dovecot(<NUMBER OF DAYS>);
+
+    <YOUR CODE HERE, INVOLVING $data->{'logins'}>
+
+=head2 maillog: Show all logins
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+    use SpamReport::Data;
+    SpamReport::Analyze::latest_dovecot(3);
+
+    for my $login (keys %{$data->{'logins'}}) {
+        print "Account: $login\n";
+        print "Total logins: $data->{'logins'}{$login}{'total_logins'}\n";
+        for my $ip (keys %{$data->{'logins'}{$login}{'logins_from'}}) {
+            my $country = SpamReport::GeoIP::lookup($ip);
+            printf "IP $ip%s (logged in %d times)\n",
+                ($country ? " ($country)" : ''),
+                $data->{'logins'}{$login}{'logins_from'}{$ip}
+        }
+        print "\n";
+    }
+
+=head3 Description
+
+    This parses the maillogs as required to get the last three days' worth of
+    logins, and then populates $data->{'logins'} with the extracted information.
+    The remainder of the code just displays everything in this data structure.
+
+=head2 Skeleton code for queries against scripts
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+    use SpamReport::Tracking::Scripts;
+    SpamReport::GeoIP::init();
+    SpamReport::Tracking::Scripts::load();
+    my $scripts = SpamReport::Tracking::Scripts::latest();
+
+    <YOUR CODE INVOLVING SCRIPTS>
+
+=head3 Example $scripts
+
+    $VAR1 = {
+              'aadb6031bc50ae1662de24c57cdff0fc' => {
+                                                      'ip16' => 2,
+                                                      'count' => 4,
+                                                      'geo' => {
+                                                               'US' => 3
+                                                             },
+                                                      'ips' => 3,
+                                                      'latest' => '1460350800',
+                                                      'path_variations' => 1,
+                                                      'file' => 'contactengine.php',
+                                                      'file_variations' => 1
+                                                    }
+            };
+
+=head2 scripts: Find paths with a given md5sum
+
+    #! /usr/bin/env perl
+    BEGIN { require '/root/bin/spamreport' }
+    use SpamReport::Tracking::Scripts;
+    use SpamReport::ANSIColor;
+    SpamReport::GeoIP::init();
+    
+    my $md5sum = shift @ARGV or die "usage: $0 <md5sum>\n";
+    
+    use Data::Dumper;
+    SpamReport::Tracking::Scripts::load();
+    my $scripts = SpamReport::Tracking::Scripts::latest();
+    
+    my $script = $scripts->{$md5sum}
+        or die "No scripts with md5sum: $md5sum\n";
+    
+    printf "$CYAN%s$NULL $RED%s$NULL (%s) /16:$RED%d$NULL\n",
+        $md5sum, $script->{'file'},
+        SpamReport::Output::top_country($script->{'geo'}, 'direct'),
+        $script->{'ip16'};
+    
+    SpamReport::Output::print_script_info($md5sum);
+
+=head3 Example output
+
+    # perl exam7.pl 9dcecee4b3159c6834dcaa445af1122e
+    9dcecee4b3159c6834dcaa445af1122e user-new.php (IT:1) /16:1
+    4 /home2/bogo/public_html/diygoodtips.com/wp-admin/user-new.php 14d ago
+    2 /home4/ngibad/public_html/sehat99.com/wp-admin/user-new.php 15d ago
+    2 /home1/lvodop01/public_html/www.thingsifear.com/wp-admin/user-new.php 14d ago
+    2 /home4/atifslm/public_html/plasticsurgerytips.info/wp-admin/user-new.php 14d ago
+    2 /home1/gian1977/public_html/voltisanti2/wp-admin/user-new.php 1d ago
+    1 /home4/illipro/luiskim/wp-admin/user-new.php 15d ago
+
+=head1 Email Records
+
+=head2 SpamReport::Email
+
+    struct(
+        date               => '$', # 2016-04-12
+        time               => '$', # 403 (seconds since midnight)
+        subject            => '$', # Hello (given T="Hello" in logs)
+        recipients         => '$', # bob@somedomain.net
+        script             => '$', # domain.com/path/to/script.php (rare)
+        sender             => '$', # bob@somedomain.net (of "from bob@..." in logs)
+        sender_domain      => '$', # somedomain.net
+        host_auth          => '$', # A=dovecot_plain
+        auth_sender        => '$', # bob (given "A=dovecot_plain:bob"; usually is mailbox)
+        auth_sender_domain => '$', # somedomain.com (given "A=dovecot_plain:bob@somedomain.com")
+        received_protocol  => '$', # esmtpsa (given P=esmtpsa)
+        ident              => '$', # bob (given U=bob)
+        who                => '$', # bob (inferred from other fields)
+        ip                 => '$', # 1.2.3.4 (given ([1.2.3.4]))
+        helo               => '$', # somedomain.com ([1.2.3.4] [1.2.3.4]:1234)
+        source             => '$', # (unused - present in queued email)
+        auth_id            => '$', # (unused - present in queued email)
+    );
+
+=head2 SpamReport::Email::AuthBounce;
+
+    struct(
+        date               => '$', # 2016-04-12
+        time               => '$', # 403 (seconds since midnight)
+        subject            => '$', # Hello (given T="Hello" in logs)
+        recipients         => '$', # bob@somedomain.net
+        recipient_users    => '$', # bob (f.e. if recipients is joe@a-bob-domain.com)
+        script             => '$', # domain.com/path/to/script.php (rare)
+        host_auth          => '$', # A=dovecot_plain
+        auth_sender        => '$', # bob (given "A=dovecot_plain:bob"; usually is mailbox)
+        auth_sender_domain => '$', # somedomain.com (given "A=dovecot_plain:bob@somedomain.com")
+        who                => '$', # bob (inferred from other fields)
+        source             => '$', # (unused - present in queued email)
+    );
+
+=head2 SpamReport::Email::Bounce;
+
+    struct(
+        date            => '$', # 2016-04-12
+        time            => '$', # 403 (seconds since midnight)
+        recipients      => '$', # bob@somedomain.net
+        script          => '$', # domain.com/path/to/script.php (rare)
+        recipient_users => '$', # bob (f.e. if recipients is joe@a-bob-domain.com)
+        who             => '$', # bob (inferred from other fields)
+    );
+
+=head2 SpamReport::Email::Queue;
+
+    struct(
+        ident              => '$', # bob (given U=bob)
+        received_protocol  => '$', # esmtpsa (given P=esmtpsa)
+        auth_id            => '$', # (unused - present in queued email)
+        auth_sender        => '$', # bob (given "A=dovecot_plain:bob"; usually is mailbox)
+        helo_name          => '$', # somedomain.com
+        host_address       => '$', # 1.2.3.4.1234
+        host_auth          => '$', # A=dovecot_plain
+        interface_address  => '$', # interface that accepted the email
+        frozen             => '$', # true if frozen
+        deliver_firsttime  => '$', # true if found in queue header
+        host_lookup_failed => '$', # true if found in queue header
+        local              => '$', # true if found in queue header
+        localerror         => '$', # true if found in queue header
+        sender             => '$', # bob@somedomain.net (of "from bob@..." in logs)
+        num_recipients     => '$', # count of recipients
+        script             => '$', # domain.com/path/to/script.php (rare)
+        boxtrapper         => '$', # true if generated by boxtrapper
+        subject            => '$', # Hello (given T="Hello" in logs)
+        type               => '$', # one of 'bounce local login relay
+        source             => '$', # (unused - present in queued email)
+        state              => '$', # one of: queued frozen thawed
+        location           => '$', # 'queue'
+        sender_domain      => '$', # somedomain.net
+        recipients         => '@', # ('bob@somedomain.net', ...)
+        recipient_domains  => '%', # map of $domain => $count
+        recipient_users    => '%', # map of $user => $count
+        who                => '$', # bob (inferred from other fields)
+    );
 
 =head1 MODULES
 
