@@ -52,7 +52,7 @@ build/spamreport: lib lib/perl5/SpamReport.pl bin/fatpack
 	perl bin/fatpack trace lib/perl5/SpamReport.pl 2>/dev/null
 	perl bin/fatpack packlists-for $$(cat fatpacker.trace) > packlists
 	perl bin/fatpack tree $$(cat packlists)
-	(echo -e "#!/usr/bin/perl\n"; perl bin/fatpack file 2>/dev/null; cat lib/perl5/SpamReport.pl) > $@
+	(/bin/echo -e "#!/usr/bin/perl\n"; perl bin/fatpack file 2>/dev/null; cat lib/perl5/SpamReport.pl) > $@
 	perl -i -pe 'if (/\$$module_dir = __FILE__/) { print; $$_ = q($$module_dir = "/root/bin/";) }' build/spamreport
 	perl -i -pe 's|\$$fatpacked{"perl5/|\$$fatpacked{"|g' build/spamreport
 	chmod +x $@
