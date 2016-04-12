@@ -390,7 +390,9 @@ sub truncate_preparsed {
                glob "/opt/hgmods/logs/*.gz";
     for (@logs) {
         print "Removing old preparsed log: $_\n";
-        unlink $_
+        unlink $_;
+        s/\.gz$/.stor/;
+        unlink $_;
     }
 }
 
