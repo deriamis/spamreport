@@ -2,7 +2,7 @@ export PERL5LIB := ${PWD}/lib${PERL5LIB+:}${PERL5LIB}:${PWD}/lib/perl5
 export PERL_LOCAL_LIB_ROOT := ${PWD}${PERL_LOCAL_LIB_ROOT+:}${PERL_LOCAL_LIB_ROOT}
 export PERL_MB_OPT := --install_base "${PWD}"
 export PERL_MM_OPT := INSTALL_BASE=${PWD}
-ASSETS=build/ipscountry.dat build/ip.gif build/cc.gif
+ASSETS=build/.spamreport/ipscountry.dat build/.spamreport/ip.gif build/.spamreport/cc.gif
 
 .PHONY: deps all install clean distclean lib
 
@@ -48,22 +48,22 @@ bin/fatpack:
 	perl bin/cpanm -L ./ --exclude-vendor --no-man-pages App::FatPacker App::cpanminus
 
 build/spamreport: lib lib/perl5/SpamReport.pl bin/fatpack
-	mkdir -p build
+	mkdir -p build/.spamreport
 	perl bin/fatpack trace lib/perl5/SpamReport.pl 2>/dev/null
 	perl bin/fatpack packlists-for $$(cat fatpacker.trace) > packlists
 	perl bin/fatpack tree $$(cat packlists)
 	(/bin/echo -e "#!/usr/bin/perl\n"; perl bin/fatpack file 2>/dev/null; cat lib/perl5/SpamReport.pl) > $@
-	perl -i -pe 'if (/\$$module_dir = __FILE__/) { print; $$_ = q($$module_dir = "/root/bin/";) }' build/spamreport
+	perl -i -pe 'if (/\$$module_dir = __FILE__/) { print; $$_ = q($$module_dir = "/root/bin/.spamreport/";) }' build/spamreport
 	perl -i -pe 's|\$$fatpacked{"perl5/|\$$fatpacked{"|g' build/spamreport
 	chmod +x $@
 	rm -rfv man
 
-build/ipscountry.dat: lib/perl5/Geo/ipscountry.dat
+build/.spamreport/ipscountry.dat: lib/perl5/Geo/ipscountry.dat
 	cp $< $@
 
-build/ip.gif: lib/perl5/IP/Country/Fast/ip.gif
+build/.spamreport/ip.gif: lib/perl5/IP/Country/Fast/ip.gif
 	cp $< $@
 
-build/cc.gif: lib/perl5/IP/Country/Fast/cc.gif
+build/.spamreport/cc.gif: lib/perl5/IP/Country/Fast/cc.gif
 	cp $< $@
 

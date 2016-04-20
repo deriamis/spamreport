@@ -270,7 +270,7 @@ $VERSION = '2016022601';
 my ($geo, $ipc);
 
 sub init {
-    $geo = Geo::IPfree->new("/root/bin/ipscountry.dat");
+    $geo = Geo::IPfree->new("/root/bin/.spamreport/ipscountry.dat");
     $geo->Faster;
     $ipc = IP::Country::Fast->new;
 }
@@ -313,7 +313,7 @@ $loadcronfail = '';
 sub try_advance {
     my ($log, $logfile, $inode) = @_;
     my $date = $data->{'try_advance'};
-    eval { $data->{$date} = lock_retrieve("/opt/hgmods/logs/$date.stor") };
+    eval { $data->{$date} = lock_retrieve($data->{'OPTS'}{'log_path'} . "/$date.stor") };
     if ($@) {
         warn $@;
         return open_preparse($date)
@@ -322,12 +322,12 @@ sub try_advance {
         $logfile eq $data->{$date}{'last_line'}{'logfile'} &&
         $inode == $data->{$date}{'last_line'}{'inode'};
     File::Nonblock::seek($log, $data->{$date}{'last_line'}{'tell'});
-    my $tmp = File::Temp::mktemp("/opt/hgmods/logs/$date.XXXXXX");
-    system cp => "/opt/hgmods/logs/$date.gz", $tmp
-        and die "Failed to copy /opt/hgmods/logs/$date.gz to $tmp";
+    my $tmp = File::Temp::mktemp($data->{'OPTS'}{'log_path'} . "/$date.XXXXXX");
+    system cp => $data->{'OPTS'}{'log_path'} . "/$date.gz", $tmp
+        and die "Failed to copy " . $data->{'OPTS'}{'log_path'} . "/$date.gz to $tmp";
     open $data->{'out'}{$date}, '|-', "$gzip >> $tmp"
-        or die "Couldn't fork $gzip for /opt/hgmods/logs/$date.gz : $!";
-    $data->{'outmap'}{$tmp} = "/opt/hgmods/logs/$date.gz";
+        or die "Couldn't fork $gzip for " . $data->{'OPTS'}{'log_path'} . "/$date.gz : $!";
+    $data->{'outmap'}{$tmp} = $data->{'OPTS'}{'log_path'} . "/$date.gz";
     $data->{'advanced'} = 1;
 }
 
@@ -1127,7 +1127,7 @@ sub latest_exim_days {
     my @days = grep { defined $_ }
                map { m,/(\d+-\d+-\d+)\.gz$, && $1 }
                sort { -M $a <=> -M $b }
-               glob('/opt/hgmods/logs/*.gz');
+               glob($data->{'OPTS'}{'log_path'} . '/*.gz');
     @days = grep { defined $_ } @days[0..$days-1];
     for (@days) {
         $data->{'OPTS'}{'exim_days'}{$_}++;
@@ -1147,7 +1147,7 @@ sub latest_metadata {
     my ($days, $sub) = @_;
     my @days = latest_exim_days($days);
     for (@days) {
-        eval { $data->{$_} = SpamReport::Data::lock_retrieve("/opt/hgmods/logs/$_.stor") };
+        eval { $data->{$_} = SpamReport::Data::lock_retrieve($data->{'OPTS'}{'log_path'} . "/$_.stor") };
     }
     SpamReport::Data::merge_counters(@days);
     return @days;
@@ -3862,6 +3862,7 @@ use Date::Parse;
 use Getopt::Long qw(GetOptions HelpMessage VersionMessage);
 use Pod::Usage;
 
+use File::Path;
 use File::Basename;
 use IO::Handle;
 
@@ -4096,9 +4097,8 @@ sub check_options {
             die "--dump target must be owned by root: $d"
         }
     }
-    umask 0177;
-    mkdir "/opt/hgmods/", 0700;
-    mkdir "/opt/hgmods/logs/", 0700;
+
+    $OPTS{'log_path'} = "/opt/hgmods/spamreport";
 
     $OPTS{'start_time'} = $OPTS{'end_time'} - ($OPTS{'search_hours'} * 3600) if ( ! $OPTS{'start_time'} );
 
@@ -4340,7 +4340,7 @@ sub filter_exim_logs {
     local $data->{'OPTS'}{'start_time'} = $data->{'OPTS'}{'start_time'};
 
     my @days = reverse sort keys %{$data->{'OPTS'}{'exim_days'}};
-    my @exist = map { -s "/opt/hgmods/logs/$_.gz" > 20 } @days;
+    my @exist = map { -s $data->{'OPTS'}{'log_path'} . "/$_.gz" > 20 } @days;
     my $today;
     for (0..$#days-1) { # -1 to prevent success on the final day's check
         next if grep { ! $exist[$_] } ($_..$#days);
@@ -4354,9 +4354,9 @@ sub filter_exim_logs {
         $data->{'OPTS'}{'start_time'} = timelocal(0, 0, 0, $day, $mon-1, $year);
         last
     }
-    if ($today && -s "/opt/hgmods/logs/$today.gz" > 20
+    if ($today && -s $data->{'OPTS'}{'log_path'} . "/$today.gz" > 20
             && $data->{'OPTS'}{'use_seek'}
-            && -f "/opt/hgmods/logs/$today.stor") {
+            && -f $data->{'OPTS'}{'log_path'} . "/$today.stor") {
         $data->{'try_advance'} = $today
     } else {
         SpamReport::Data::open_preparse(@days)
@@ -4492,9 +4492,13 @@ sub main {
     STDOUT->autoflush(1);
     STDERR->autoflush(1);
 
+    umask 0177;
+
     die "This script only supports cPanel at this time."
         unless -r '/etc/userdomains' && -d '/etc/valiases';
     check_options() or pod2usage(2);
+
+    mkpath($OPTS{'log_path'}, 0, 0700);
 
     SpamReport::Data::disable() if $OPTS{'uncached'};
 
@@ -4841,22 +4845,22 @@ Indicator key:
 
 =head1 FILES
 
-    /opt/hgmods/logs/YYYY-MM-DD.gz
+    /opt/hgmods/spamreport/YYYY-MM-DD.gz
 
         Compressed preparsed excerpt of exim_mainlog entries for a day.
 
-    /opt/hgmods/logs/YYYY-MM-DD.stor
+    /opt/hgmods/spamreport/YYYY-MM-DD.stor
 
         Storable metadata about a day's interesting log entries.
 
-    /opt/hgmods/logs/spamscripts.dat
+    /opt/hgmods/spamreport/spamscripts.dat
 
         YAML script tracking data.
 
         "md5sum" -> "ips" -> (ips -> # hits by IP against md5sum)
                     "paths" -> (script paths -> # hits against path)
 
-    /opt/hgmods/logs/spamperformance.log
+    /opt/hgmods/spamreport/spamperformance.log
 
         Text log of spamreport performance data.
 
