@@ -296,24 +296,22 @@ use File::Which qw ( which );
 use File::Temp;
 use common::sense;
 
-use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED $loadcronfail);
-use vars qw($logpath $cronpath $noisy);
+use vars qw($VERSION $data @ISA @EXPORT $MAX_RETAINED);
+use vars qw($noisy);
 $VERSION = '2016022601';
 @ISA = 'Exporter';
 @EXPORT = qw($data);
 my $gzip = which('gzip');
 
-$logpath = "/opt/hgmods/logs/spamreport.dat.gz";
-$cronpath = "/opt/hgmods/logs/spamreportcron.dat.gz";
-
 $data = {};
+$data->{'OPTS'}{'log_path'} = "/opt/hgmods/spamreport";
+# ^ set by default for the sake of scripts that skip parse_options
 $MAX_RETAINED = 4;
-$loadcronfail = '';
 
 sub try_advance {
     my ($log, $logfile, $inode) = @_;
     my $date = $data->{'try_advance'};
-    eval { $data->{$date} = lock_retrieve($data->{'OPTS'}{'log_path'} . "/$date.stor") };
+    eval { $data->{$date} = Storable::lock_retrieve($data->{'OPTS'}{'log_path'} . "/$date.stor") };
     if ($@) {
         warn $@;
         return open_preparse($date)
@@ -343,71 +341,35 @@ sub last_line {
     }
 }
 
-sub retrieve {
-    my ($path, $lock) = @_;
-    if ($path =~ /\.gz(?:$|\.)/) {
-        open my $fd, '-|', $gzip, '-dc', $path
-            or die "Couldn't fork $gzip for $path : $!";
-        if ($lock) { flock $fd, LOCK_SH or die "Couldn't lock $path : $!"; }
-        my $ref = fd_retrieve($fd)
-            or die "Unable to read $path : $!";
-        close $fd;
-        return $ref
-    }
-    elsif ($lock) {
-        return Storable::lock_retrieve($path)
-    }
-    else {
-        return Storable::retrieve($path)
-    }
-}
-sub lock_retrieve { retrieve(shift, 1) }
-
-sub lock_store {
-    my ($ref, $path) = @_;
-    if ($path =~ /\.gz$/) {
-        $path =~ m,^(.*)/[^/]+$, or die "Couldn't find directory component of $path";
-        my $tmp = File::Temp::mktemp($1."/srgzipout-XXXXXX");
-
-        open my $fd, '|-', "$gzip > $tmp"
-            or die "Couldn't fork $gzip for $path : $!";
-        store_fd $ref, $fd or die "Failed to store to $path : $!";
-        close $fd;
-        rename $tmp, $path or die "Unable to rename $tmp to $path : $!";
-    } else {
-        return Storable::lock_store($ref, $path)
-    }
-}
-
 sub load_preparse {
     for (@_) {
-        open my $f, '-|', $gzip, '-dc', "/opt/hgmods/logs/$_.gz"
+        open my $f, '-|', $gzip, '-dc', "$data->{'OPTS'}{'log_path'}/$_.gz"
             or next;
-        eval { $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor") };
+        eval { $data->{$_} = Storable::lock_retrieve("$data->{'OPTS'}{'log_path'}/$_.stor") };
         warn $@ if $@;
         while (defined($_ = <$f>)) {
             chomp;
             $data->{'total_email'}++;
             push @{$data->{'mailids'}}, SpamReport::Email::unserialize($_);
         }
-        print "Loaded preparse log /opt/hgmods/logs/$_.gz\n"
+        print "Loaded preparse log $data->{'OPTS'}{'log_path'}/$_.gz\n"
     }
 }
 
 sub all_preparsed_exist {
     for (@_) {
-        return 0 unless -s "/opt/hgmods/logs/$_.gz" > 20
+        return 0 unless -s "$data->{'OPTS'}{'log_path'}/$_.gz" > 20
     }
     return 1
 }
 
 sub stream_preparse {
     for (@_) {
-        open $data->{'in'}{$_}, '-|', $gzip, '-dc', "/opt/hgmods/logs/$_.gz"
-            or die "Unable to open /opt/hgmods/logs/$_.gz : $!";
-        eval { $data->{$_} = lock_retrieve("/opt/hgmods/logs/$_.stor") };
+        open $data->{'in'}{$_}, '-|', $gzip, '-dc', "$data->{'OPTS'}{'log_path'}/$_.gz"
+            or die "Unable to open $data->{'OPTS'}{'log_path'}/$_.gz : $!";
+        eval { $data->{$_} = Storable::lock_retrieve("$data->{'OPTS'}{'log_path'}/$_.stor") };
         warn $@ if $@;
-        print "Streaming preparse log /opt/hgmods/logs/$_.gz\n" if $noisy;
+        print "Streaming preparse log $data->{'OPTS'}{'log_path'}/$_.gz\n" if $noisy;
     }
     $data->{'in_streams'} = [@_];
 }
@@ -429,17 +391,17 @@ sub next_preparse {
 
 sub open_preparse {
     for (@_) {
-        my $tmp = File::Temp::mktemp("/opt/hgmods/logs/$_.XXXXXX");
+        my $tmp = File::Temp::mktemp("$data->{'OPTS'}{'log_path'}/$_.XXXXXX");
         open $data->{'out'}{$_}, '|-', "$gzip > $tmp"
-            or die "Couldn't fork $gzip for /opt/hgmods/logs/$_.gz : $!";
-        $data->{'outmap'}{$tmp} = "/opt/hgmods/logs/$_.gz";
+            or die "Couldn't fork $gzip for $data->{'OPTS'}{'log_path'}/$_.gz : $!";
+        $data->{'outmap'}{$tmp} = "$data->{'OPTS'}{'log_path'}/$_.gz";
     }
 }
 sub close_preparse {
     for (keys %{$data->{'out'}}) {
         close $data->{'out'}{$_};
         delete $data->{'out'}{$_};
-        Storable::lock_store($data->{$_}, "/opt/hgmods/logs/$_.stor") if exists $data->{$_}
+        Storable::lock_store($data->{$_}, "$data->{'OPTS'}{'log_path'}/$_.stor") if exists $data->{$_}
     }
     for (keys %{$data->{'outmap'}}) {
         rename $_, $data->{'outmap'}{$_};
@@ -475,7 +437,7 @@ sub truncate_preparsed {
                grep { $_->[1] > $MAX_RETAINED }
                map { [$_, -M $_] }
                grep { m,/\d{4}-\d{2}-\d{2}\.[^/]+$, }
-               glob "/opt/hgmods/logs/*.gz";
+               glob "$data->{'OPTS'}{'log_path'}/*.gz";
     for (@logs) {
         print "Removing old preparsed log: $_\n";
         unlink $_;
@@ -487,152 +449,8 @@ sub truncate_preparsed {
 sub clean_garbage {
     my @partial = grep { -M $_ > 1 }
                   grep { m,/\d{4}-\d{2}-\d{2}\.[^.]{6}$, }
-                  glob "/opt/hgmods/logs/*";
+                  glob "$data->{'OPTS'}{'log_path'}/*";
     unlink for @partial;
-}
-
-sub loadcron {
-    my ($path) = @_;
-    if (defined $path && -e $path) {
-        print "Loading $path\n";
-        return retrievecron($path)
-    }
-    elsif (defined $path || ! -e $cronpath) {
-        $loadcronfail = "no such file: @{[defined $path ? $path : $cronpath]}";
-        return
-    }
-    else { $path = $cronpath }
-    if (-e $path) {
-        my ($fresh, $date) = _times($path);
-        if ($fresh) {
-            print "Loading $path ($date)\n";
-            return retrievecron($path)
-        }
-        else {
-            rotatecron();
-            $loadcronfail = "file is too old: $path ($date)";
-        }
-    }
-    else {
-        $loadcronfail = "no such fail: $path";
-    }
-    return;
-}
-
-sub _times {
-    my ($path) = @_;
-    my @time = localtime((stat($path))[9]);
-    my $day = POSIX::strftime("%F", @time);
-    my $date = POSIX::strftime("%F %T", @time);
-    my $fresh = POSIX::strftime("%F", localtime()) eq $day;
-    return ($fresh, $date);
-}
-
-my %cronkeys = map { ($_, 1) }
-    qw( dest_domains ip_addresses logins mailids recipient_domains scriptdirs senders scripts
-        responsibility domain_responsibility bounce_responsibility owner_responsibility
-        bounce_owner_responsibility mailbox_responsibility forwarder_responsibility
-        young_users young_mailboxes outip outscript hourly_volume hourly_bounce_volume
-        total_outgoing total_bounce
-        OPTS
-    );
-sub savecron {
-    my %newdata;
-    for (keys %cronkeys) {
-        $newdata{$_} = $data->{$_}
-    }
-    print "Saving cron $cronpath\n";
-    lock_store \%newdata, $cronpath;
-    #DumpFile($cronpath, \%newdata);
-}
-
-sub exitsavecron {
-    for (keys %$data) {
-        delete $data->{$_} unless exists $cronkeys{$_}
-    }
-    #DumpFile($cronpath, $data);
-    rotatecron() if -e $cronpath;
-    lock_store $data, $cronpath;
-    exit
-}
-
-sub retrievecron {
-    my ($path) = @_;
-    $data = lock_retrieve($path);
-    #$data = LoadFile($path)
-}
-
-sub load {
-    my ($path) = @_;
-    $path = $logpath unless defined $path;
-    my ($fresh, $date) = _times($path);
-    return unless $fresh;
-    print "Loading $path ($date)\n";
-    #$data = LoadFile($path);
-    $data = lock_retrieve($path);
-}
-
-sub save {
-    rotate();
-    print "Saving cache $logpath\n";
-    #DumpFile($logpath, $data);
-    lock_store $data, $logpath;
-}
-
-sub rotate {
-    my ($path) = @_;
-    $path = $logpath unless defined $path;
-    my @logs = sort { -M $a <=> -M $b } glob "$path*";
-    unlink for @logs[$MAX_RETAINED..$#logs];
-    for (sort { -M $b <=> -M $a } @logs) {
-        next unless /.(\d+)\.gz$/;
-        my ($this, $next) = ($1, $1 + 1);
-        rename "$path.$this.gz", "$path.$next.gz";
-    }
-    rename $path, "$path.1";
-}
-
-sub rotatecron { rotate($cronpath) }
-
-sub disable {
-    *{"SpamReport::Data::load"}
-    = *{"SpamReport::Data::save"}
-    = *{"SpamReport::Data::retrievecron"}
-    = *{"SpamReport::Data::savecron"} = sub { };
-    *{"SpamReport::Data::exitsavecron"} = sub { exit };
-}
-
-sub details {
-    my ($file) = @_;
-    $file =~ m,/([^/]+)$,;
-    my %detail = (name => (defined($1) ? $1 : $file));
-    my $cache;  eval { $cache = retrieve($file) };
-    if ($@) {
-        $detail{'status'} = "broken $@";
-        return \%detail
-    }
-    $detail{'type'} = (($file =~ /spamreportcron\.dat/) ? 'cron' : 'cache');
-    $detail{'status'} = 'ok';
-    $detail{'size'} = -s $file;
-    $detail{'emails'} = scalar(@{$cache->{'mailids'}});
-    $detail{'outgoing'} = $cache->{'total_outgoing'};
-    $detail{'bounces'} = $cache->{'total_bounce'};
-    $detail{'OPTS'} = $cache->{'OPTS'};
-    return \%detail
-}
-
-# --ls displays files like '.3' '.test' '.1(cron)'.  load these (without (cron)).
-sub resolve {
-    my ($name) = @_;
-    return $name if $name =~ m(^/);
-    $logpath .= $name;
-    die "Unresolved cache name: $name" unless -f $logpath;
-}
-sub resolvecron {
-    my ($name) = @_;
-    return $name if $name =~ m(^/);
-    $cronpath .= $name;
-    die "Unresolved croncache name: $name" unless -f $cronpath;
 }
 
 1;
@@ -644,7 +462,7 @@ $INC{'SpamReport/Data.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Tracking::Scripts;
 use YAML::Syck qw(DumpFile LoadFile);
-use vars qw($VERSION);
+use vars qw($VERSION $trackpath);
 use File::Which qw ( which );
 use Time::Local;
 use SpamReport::GeoIP;
@@ -654,8 +472,9 @@ use common::sense;
 
 $VERSION = '2016022401';
 my $md5sum = which('md5sum');
-my $trackpath = "/opt/hgmods/logs/spamscripts.dat";
 my $midnight = timelocal(0, 0, 0, (localtime)[3..8]);
+$trackpath = "/opt/hgmods/spamreport/spamscripts.dat";
+# ^ also set by SpamReport::check_options()
 
 my $tracking;
 my @scripts;
@@ -889,11 +708,12 @@ $INC{'SpamReport/Tracking/Suspensions.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Tracking::Performance;
 use SpamReport::Data;
-use vars qw($VERSION);
+use vars qw($VERSION $trackpath);
 use common::sense;
 
 $VERSION = '2016022401';
-my $trackpath = "/opt/hgmods/logs/spamperformance.log";
+$trackpath = "/opt/hgmods/spamreport/spamperformance.log";
+# ^ also set by SpamReport::check_options
 
 # 1MB is enough logs for anybody
 if (-s($trackpath) > 1024*1024) {
@@ -1099,6 +919,7 @@ $INC{'SpamReport/ANSIColor.pm'} = '/dev/null';
 BEGIN {
 package SpamReport::Analyze;
 use SpamReport::Data;
+use Storable;
 use common::sense;
 
 use vars qw/$VERSION @filter @email @finally/;
@@ -1147,7 +968,7 @@ sub latest_metadata {
     my ($days, $sub) = @_;
     my @days = latest_exim_days($days);
     for (@days) {
-        eval { $data->{$_} = SpamReport::Data::lock_retrieve($data->{'OPTS'}{'log_path'} . "/$_.stor") };
+        eval { $data->{$_} = Storable::lock_retrieve($data->{'OPTS'}{'log_path'} . "/$_.stor") };
     }
     SpamReport::Data::merge_counters(@days);
     return @days;
@@ -1398,43 +1219,6 @@ sub ip_at {
     print_results();
     for (keys %{$data->{'logins'}}) { $data->{'logins'}{$_}{'suspect'}++ }
     SpamReport::Output::print_login_results();
-}
-
-sub cache_ls {
-    my @details;
-    push @details, SpamReport::Data::details($_)
-        for <$SpamReport::Data::cronpath*>,
-            <$SpamReport::Data::logpath*>;
-    my @legend = qw(NAME SIZE EMAILS OUTGOING START HOURS);
-    my @widths = map { length($_) } @legend;
-    for (@details) {
-        $_->{'name'} =~ s/\.gz(?=\.|$)//;
-        $_->{'name'} =~ s/spamreport(cron)?\.dat//;
-        $_->{'name'} .= "(cron)" if defined $1;
-        width $_->{'name'} => $widths[6];
-        width sprintf("%dM", $_->{'size'}/1024/1024) => $widths[0];
-        width $_->{'emails'} => $widths[1];
-        width $_->{'outgoing'} => $widths[2];
-        #width $_->{'bounces'} => $widths[3];
-        width ago($_->{'OPTS'}{'start_time'}, 1) => $widths[4];
-        width $_->{'OPTS'}{'search_hours'} => $widths[5];
-    }
-    printf "%$widths[6]s %$widths[0]s %$widths[1]s %$widths[2]s %$widths[4]s %$widths[5]s\n",
-        @legend;
-    for (sort { $a->{'OPTS'}{'start_time'} <=> $b->{'OPTS'}{'start_time'} } @details) {
-        my $line = sprintf "%$widths[6]s %$widths[0]dM %$widths[1]d %$widths[2]d %$widths[4]s %$widths[5]d :: %s -> %s\n",
-            $_->{'name'} || 'cache',
-            $_->{'size'}/1024/1024,
-            $_->{'emails'},
-            $_->{'outgoing'},
-            #$_->{'bounces'},
-            $_->{'OPTS'}{'start_time'} ? ago($_->{'OPTS'}{'start_time'}, 1) : '',
-            $_->{'OPTS'}{'search_hours'},
-            $_->{'OPTS'}{'start_time'} ? scalar(localtime($_->{'OPTS'}{'start_time'})) : '(unknown)',
-            $_->{'OPTS'}{'end_time'} ? scalar(localtime($_->{'OPTS'}{'end_time'})) : '...';
-        $line =~ s/(\(cron\))/$GREEN$1$NULL/g;
-        print $line
-    }
 }
 
 sub print_forwarder_abuse {
@@ -3897,9 +3681,10 @@ my %OPTS = (
     'read_lines'    => 10000,
     'r_cutoff'      => 1.0,
     'latest'        => 1,
+    'log_path'      => "/opt/hgmods/spamreport",
 
     'report'        => 'summary',
-    # other values: user, script, md5, logins, forwarders, helos, cachelist
+    # other values: user, script, md5, logins, forwarders, helos
 
     # feature categories
     'use_seek'      => 1,
@@ -3924,8 +3709,7 @@ my %OPTS = (
     
     # data modes
     'load'          => 'preparse',
-    # other values: 'cache', undef, 'cron'
-    'save'          => 0,
+    # other values: undef
 );
 
 my @SAVED_OPTS = qw(search_hours start_time end_time timespec);
@@ -3970,7 +3754,6 @@ sub check_options {
 #            'time|t=s'    => \$OPTS{'timespec'},
             'override|o'  => \$OPTS{'time_override'},
             'read=i'      => \$OPTS{'read_lines'},
-            'uncached'    => \$OPTS{'uncached'},  # experimental, undocumented
             'cutoff=i'    => \$OPTS{'r_cutoff'},  # experimental, undocumented
 
             'without|w=s' => \$OPTS{'without'},
@@ -3985,21 +3768,12 @@ sub check_options {
             'helos'       => sub { $OPTS{'report'} = 'helos' },
             'forwarders'  => sub { $OPTS{'report'} = 'forwarders' },
 
-            'load=s'      => sub { $OPTS{'load'} = 'cache'; SpamReport::Data::resolve($_[1]); $OPTS{'save'} = 0 },
-            'loadcron=s'  => sub { $OPTS{'load'} = 'cron'; SpamReport::Data::resolvecron($_[1]); $OPTS{'save'} = 0 },
-            'save'        => \$OPTS{'save'},  # undocumented
             'dump=s'      => \$OPTS{'dump'},
             'keep=i'      => \$SpamReport::Data::MAX_RETAINED,
 
-            'tag=s'       => sub { $SpamReport::Data::logpath =~ s/(?=\.gz)/.$_[1]/;
-                                   $SpamReport::Data::cronpath =~ s/(?=\.gz)/.$_[1]/;
-                                   $tag_flag = 1; },
-            'ls'          => sub { $OPTS{'report'} = 'cachels'; $OPTS{'load'} = 'no' },
-            'oldcron'     => sub { $OPTS{'op'} = 'cron'; $OPTS{'load'} = undef },
             'update'      => sub { $OPTS{'op'} = 'update' },
-            'cron'        => sub { $OPTS{'op'} = 'preparse'; $OPTS{'load'} = undef; $OPTS{'with_queue'} = undef; $OPTS{'save'} = 0; $OPTS{'latest'} = undef },
+            'cron'        => sub { $OPTS{'op'} = 'preparse'; $OPTS{'load'} = undef; $OPTS{'with_queue'} = undef; $OPTS{'latest'} = undef },
             'refresh'     => sub { $OPTS{'latest'} = undef },
-            'oldlatest'   => sub { $OPTS{'load'} = 'cache' },
 
             'ip=s'        => sub { $OPTS{'op'} = 'ipat'; $OPTS{'ip'} = $_[1] },
             'at=s'        => sub { $OPTS{'op'} = 'ipat'; $OPTS{'at'} = $_[1] },
@@ -4086,6 +3860,7 @@ sub check_options {
     # 2. ensure that the directory is owned by root
     # 3. ensure that created files don't have group or other perms
     #    (and make them non-executable for root as well)
+    # (umask and path creation happens in main())
     for (defined($OPTS{'dump'}) ? $OPTS{'dump'} : ()) {
         my $d;
         if (-d $_) { $d = $_ }
@@ -4098,7 +3873,8 @@ sub check_options {
         }
     }
 
-    $OPTS{'log_path'} = "/opt/hgmods/spamreport";
+    $SpamReport::Tracking::Scripts::trackpath = $OPTS{'log_path'}."/spamscripts.dat";
+    $SpamReport::Tracking::Performance::trackpath = $OPTS{'log_path'}."/spamperformance.log";
 
     $OPTS{'start_time'} = $OPTS{'end_time'} - ($OPTS{'search_hours'} * 3600) if ( ! $OPTS{'start_time'} );
 
@@ -4500,8 +4276,6 @@ sub main {
 
     mkpath($OPTS{'log_path'}, 0, 0700);
 
-    SpamReport::Data::disable() if $OPTS{'uncached'};
-
     if ($OPTS{'op'} eq 'ipat') {
         SpamReport::Output::head_info(\%OPTS);
         setup_cpanel();
@@ -4518,24 +4292,10 @@ sub main {
         filter_exim_logs() if $OPTS{'want_eximlog'};
         SpamReport::Tracking::Scripts::background_check() if $OPTS{'op'} eq 'preparse';
         DumpFile($OPTS{'dump'}.".parse", $data) if $OPTS{'dump'};
-        if ($OPTS{'save'}) {
-            SpamReport::Data::merge_counters(keys %{$OPTS{'exim_days'}});
-            SpamReport::Data::save();
-        }
         exit if $OPTS{'op'} eq 'preparse';
     }
 
-    if ($OPTS{'load'} eq 'cron') {
-        SpamReport::Data::loadcron();
-        if (keys %$data) {
-            $loadedcron = 1;
-            $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
-        } else {
-            warn "${RED}daily cache not not loaded! $SpamReport::Data::loadcronfail\n"
-               . "This run will take much longer than normal$NULL\n"
-        }
-    }
-    elsif ($OPTS{'load'} eq 'preparse') {
+    if ($OPTS{'load'} eq 'preparse') {
         SpamReport::Data::stream_preparse(keys %{$OPTS{'exim_days'}});
         if (keys %$data) {
             $loadedcron = 1;
@@ -4548,64 +4308,31 @@ sub main {
 
     $data->{'OPTS'} = \%OPTS;
 
-    if ($OPTS{'op'} eq 'cron' or $OPTS{'op'} eq 'update') {
+    if ($OPTS{'op'} eq 'update') {
         SpamReport::Output::head_info(\%OPTS);
         setup_cpanel();
-        if ($OPTS{'op'} eq 'cron' || !$loadedcron) {
-            $OPTS{'datelimit'} = 'not today';
-            parse_exim_dbs() if $OPTS{'want_eximdb'};
-            parse_exim_logs() if $OPTS{'want_eximlog'};
-            parse_dovecot_logs() if $OPTS{'want_maillog'};
-        }
-        if ($OPTS{'op'} eq 'update') {
-            SpamReport::Data::savecron() if !$loadedcron && $OPTS{'save'};
-            $OPTS{'datelimit'} = 'only today' if $loadedcron;
-            parse_exim_dbs() if $OPTS{'want_eximdb'};
-            parse_exim_logs() if $OPTS{'want_eximlog'};
-            parse_exim_queue() if $OPTS{'want_queue'};
-            parse_dovecot_logs() if $OPTS{'want_maillog'};
-            DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
-        }
+        $OPTS{'datelimit'} = 'only today' if $loadedcron;
+        parse_exim_dbs() if $OPTS{'want_eximdb'};
+        parse_exim_logs() if $OPTS{'want_eximlog'};
+        parse_exim_queue() if $OPTS{'want_queue'};
+        parse_dovecot_logs() if $OPTS{'want_maillog'};
+        DumpFile($OPTS{'dump'}.".scan", $data) if $OPTS{'dump'};
         SpamReport::Cpanel::young_users();
-        SpamReport::Tracking::Scripts::background_check() if $OPTS{'save'};
-        SpamReport::Data::exitsavecron() if $OPTS{'op'} eq 'cron';
+        SpamReport::Tracking::Scripts::background_check();
         SpamReport::Cpanel::offserver_forwarders();
-        SpamReport::Data::save() if $OPTS{'save'};
         exit
     }
     # op: report
 
 
-    my $cacheloaded;
-    if ($OPTS{'load'} eq 'no') {
-        # no need to load data
-        SpamReport::Output::head_info($data->{'OPTS'});
-        #SpamReport::Tracking::Scripts::background_check();
-    } elsif ($OPTS{'load'} eq 'cache') {
-        SpamReport::Data::load() && $cacheloaded++
-    }
-
-    if ($OPTS{'load'} eq 'cache' && $cacheloaded) {
-        userfy_args();
-        $OPTS{$_} = $data->{'OPTS'}{$_} for @SAVED_OPTS;
-        $data->{'OPTS'} = \%OPTS;
-        SpamReport::Output::head_info($data->{'OPTS'});
-    } elsif ($OPTS{'load'} ne 'no') {
-        if (!$cacheloaded && $OPTS{'load'} ne 'preparse') {
-            "${RED}failed to load cache!  This run may take much longer than normal.$NULL\n";
-        }
-        SpamReport::Output::head_info($data->{'OPTS'});
+    SpamReport::Output::head_info($data->{'OPTS'});
+    unless ($OPTS{'load'} eq 'no') {
         setup_cpanel();
         userfy_args();
         $OPTS{'datelimit'} = 'only today' if $loadedcron;
         parse_exim_dbs() if $OPTS{'want_eximdb'};
         parse_exim_queue() if $OPTS{'want_queue'};
-        parse_exim_logs() if $OPTS{'want_eximlog'} && $OPTS{'load'} ne 'preparse';
         parse_dovecot_logs() if $OPTS{'want_maillog'};
-        SpamReport::Data::save() if $OPTS{'save'} && !$cacheloaded
-            && !(defined($OPTS{'user'}) or
-                 defined($OPTS{'without'}));
-        #SpamReport::Tracking::Scripts::background_check() unless $OPTS{'load'} eq 'preparse';
     }
     SpamReport::Tracking::Suspensions::load();
     SpamReport::GeoIP::init();
