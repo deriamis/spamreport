@@ -4388,11 +4388,6 @@ sub main {
         exit;
     }
 
-    if ($OPTS{'report'} eq 'cachels') {
-        SpamReport::Output::cache_ls();
-        exit;
-    }
-
     die "Invalid \$OPTS{'report'} : $OPTS{'report'}"
         unless $OPTS{'report'} eq 'summary';
 
